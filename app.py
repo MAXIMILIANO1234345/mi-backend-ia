@@ -65,11 +65,11 @@ def buscar_en_grafo(db_driver, vector_pregunta):
     print("Buscando en el grafo (Neo4j)...")
     contexto_encontrado = []
     
-    # Esta es la consulta Cypher "Mágica"
-    # Busca 3 chunks de texto Y 2 imágenes, y obtiene su estructura
+    # --- ¡¡¡AQUÍ ESTÁ LA CORRECCIÓN!!! ---
+    # Cambiamos 'db.idx.vector.queryNodes' por 'db.index.vector.queryNodes'
     cypher_query = """
         // Busca Chunks de Texto
-        CALL db.idx.vector.queryNodes('chunk_vector_index', 3, $vector) YIELD node AS item, score
+        CALL db.index.vector.queryNodes('chunk_vector_index', 3, $vector) YIELD node AS item, score
         MATCH (item)-[:PERTENECE_A]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
         RETURN 'Texto' AS tipo, 
                item.texto AS contenido, 
@@ -79,7 +79,7 @@ def buscar_en_grafo(db_driver, vector_pregunta):
                score
         UNION
         // Busca Imágenes
-        CALL db.idx.vector.queryNodes('imagen_vector_index', 2, $vector) YIELD node AS item, score
+        CALL db.index.vector.queryNodes('imagen_vector_index', 2, $vector) YIELD node AS item, score
         MATCH (item)-[:SE_ENCUENTRA_EN]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
         RETURN 'Imagen' AS tipo, 
                item.url AS contenido, 
