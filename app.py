@@ -154,6 +154,11 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
         print(f"Error en el Redactor (Paso 1.3): {e}")
         return {"respuesta_principal": "Ocurrió un error al generar la respuesta JSON.", "puntos_clave": [], "fuente": ""}
 
+# --- ¡¡¡CORRECCIÓN AQUÍ!!! ---
+# Inicializamos la aplicación Flask ANTES de definir las rutas.
+app = Flask(__name__)
+CORS(app)
+
 
 # --- ENDPOINT 1: ASISTENTE DEL MANUAL ---
 @app.route("/preguntar", methods=["POST"])
