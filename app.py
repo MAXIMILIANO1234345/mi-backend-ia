@@ -37,8 +37,7 @@ def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
 # ==============================================================================
 # === FLUJO 1: ASISTENTE DEL MANUAL (RAG + NEO4J) ===
 # ==============================================================================
-# Esta sección es para el chatbot. Es independiente del Flujo 2.
-
+# ... (Todo el Flujo 1 es idéntico, lo omito por brevedad) ...
 # PASO 1.1: EL PLANIFICADOR (Modo JSON)
 def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
     print(f"Paso 1.1: Planificador - Creando plan para: '{pregunta_usuario}'")
@@ -218,17 +217,19 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     
     # Este prompt es la clave. Es muy estricto y pide SÓLO el script.
     prompt_generador_bpy = f"""
-    Eres un asistente experto en el API de Python (bpy) de Blender.
+    Eres un asistente experto en el API de Python (bpy) de Blender (versión 3.4 en adelante).
     La solicitud del usuario es: "{prompt_usuario}"
 
     Tu tarea es generar un script de Python (bpy) que cumpla con la solicitud.
     Sigue estas reglas OBLIGATORIAMENTE:
     1.  Importa `bpy`.
     2.  Limpia SIEMPRE la escena por defecto al inicio (cubo, luz, cámara).
-    3.  Crea los objetos, materiales, luces y cámara necesarios.
-    4.  Coloca la cámara en una posición razonable para ver los objetos creados.
-    5.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
-    6.  Configura la ruta de salida a '/tmp/render_result.png'.
+    3.  Usa métodos modernos (versión 3.4+). Por ejemplo, prefiere manipular datos directamente (ej. `obj.location`, `obj.select_set(True)`) en lugar de operadores de contexto (`bpy.ops.transform.translate()`, `bpy.ops.object.select_all()`), a menos que sea estrictamente necesario.
+    4.  Crea los objetos, materiales, luces y cámara necesarios.
+    5.  Coloca la cámara en una posición razonable para ver los objetos creados.
+    6.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
+    7.  Configura la ruta de salida a '/tmp/render_result.png'.
+    8.  NO uses el parámetro `use_confirm=True`. Está obsoleto.
 
     Responde SÓLO con un JSON que tenga esta estructura ÚNICA:
     {{
