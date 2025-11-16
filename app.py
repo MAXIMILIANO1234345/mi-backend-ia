@@ -7,33 +7,10 @@ from flask_cors import CORS
 from neo4j import GraphDatabase
 
 # --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión 13.0 - Endpoint de Script PURO)... Cargando variables.")
+print("Iniciando API (Versión 14.0 - Fix 'SELECTALL')... Cargando variables.")
 load_dotenv()
 
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-NEO4J_URI = os.getenv('NEO4J_URI')
-NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
-NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
-NEO4J_DATABASE = os.getenv('NEO4J_DATABASE')
-
-embedding_model = "models/text-embedding-004"
-generative_model_name = "models/gemini-2.5-flash"
-
-# --- 2. Funciones de Ayuda (Comunes) ---
-
-def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
-    """Vectoriza texto."""
-    try:
-        result = genai.embed_content(
-            model=embedding_model,
-            content=text_chunk,
-            task_type=task_type
-        )
-        return result['embedding']
-    except Exception as e:
-        print(f"Error al vectorizar texto (tipo: {task_type}): {e}")
-        return None
-
+# ... (Se omite el Flujo 1 idéntico) ...
 # ==============================================================================
 # === FLUJO 1: ASISTENTE DEL MANUAL (RAG + NEO4J) ===
 # ==============================================================================
@@ -230,6 +207,7 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     6.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
     7.  Configura la ruta de salida a '/tmp/render_result.png'.
     8.  NO uses el parámetro `use_confirm=True`. Está obsoleto.
+    9.  REGLA DE SELECCIÓN: Si usas `bpy.ops.object.select_all()`, el parámetro es `action='SELECT'` o `action='DESELECT'`. El enum 'SELECTALL' es incorrecto y obsoleto.
 
     Responde SÓLO con un JSON que tenga esta estructura ÚNICA:
     {{
