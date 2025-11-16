@@ -5,13 +5,14 @@ import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from neo4j import GraphDatabase
+import re
+import datetime # Importamos datetime para añadir timestamps
 
 # --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión 14.0 - Fix 'SELECTALL')... Cargando variables.")
+print("Iniciando API (Versión 17.0 - Fix Visibilidad de RAG)... Cargando variables.")
 load_dotenv()
 
-# --- ¡¡¡AÑADIR ESTAS LÍNEAS FALTANTES!!! ---
-# Leemos las variables de entorno (que Render provee) y las guardamos en variables de Python
+# --- Leemos variables de entorno (Corregidas) ---
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 NEO4J_URI = os.getenv('NEO4J_URI')
 NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
@@ -20,13 +21,26 @@ NEO4J_DATABASE = os.getenv('NEO4J_DATABASE')
 
 embedding_model = "models/text-embedding-004"
 generative_model_name = "models/gemini-2.5-flash"
-# -----------------------------------------------
 
-# ... (Se omite el Flujo 1 idéntico) ...
+# --- 2. Funciones de Ayuda (Comunes) ---
+# ... (get_text_embedding es idéntico) ...
+def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
+    """Vectoriza texto."""
+    try:
+        result = genai.embed_content(
+            model=embedding_model,
+            content=text_chunk,
+            task_type=task_type
+        )
+        return result['embedding']
+    except Exception as e:
+        print(f"Error al vectorizar texto (tipo: {task_type}): {e}")
+        return None
+
 # ==============================================================================
 # === FLUJO 1: ASISTENTE DEL MANUAL (RAG + NEO4J) ===
 # ==============================================================================
-# ... (Todo el Flujo 1 es idéntico, lo omito por brevedad) ...
+
 # PASO 1.1: EL PLANIFICADOR (Modo JSON)
 def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
     print(f"Paso 1.1: Planificador - Creando plan para: '{pregunta_usuario}'")
@@ -52,7 +66,8 @@ def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
             prompt_planificador, 
             generation_config=config_json
         )
-        plan = json.loads(response.text)
+        clean_json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', response.text)
+        plan = json.loads(clean_json_text)
         print(f"Paso 1.1: Planificador - Plan obtenido: {plan}")
         return plan
     except Exception as e:
@@ -66,10 +81,14 @@ def buscar_en_grafo(db_driver, plan):
     print(f"Paso 1.2: Investigador - Buscando consultas: {consultas} (Enfocado en: {capitulo_enfocado})")
     contexto_encontrado = []
     vectores_de_busqueda = []
+    
+    # --- LA FUNCIÓN SE LLAMA DIRECTAMENTE AQUÍ ---
     for consulta in consultas:
         vec = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
         if vec:
             vectores_de_busqueda.append(vec)
+    # ---------------------------------------------
+
     if not vectores_de_busqueda: return []
     with db_driver.session(database=NEO4J_DATABASE) as session:
         params = {"vectors": vectores_de_busqueda, "capitulo_enfocado": capitulo_enfocado}
@@ -108,7 +127,7 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
     if contexto_items:
         fuentes_encontradas = set()
         for item in contexto_items:
-            fuente = f"{item['capitulo']} (Parte: {item['parte']}, Pág. {item['pagina']})"
+            fuente = f"{item['capitulo']} (Parte: {item['parte']}, Pág {item['pagina']})"
             fuentes_encontradas.add(fuente)
             contexto_para_ia += f"--- Contexto de TEXTO de '{fuente}' ---\n{item['contenido']}\n\n"
         if fuentes_encontradas:
@@ -137,7 +156,11 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
     try:
         config_json = {"response_mime_type": "application/json"}
         respuesta_ia = modelo_gemini.generate_content(prompt_para_ia, generation_config=config_json)
-        return json.loads(respuesta_ia.text)
+        
+        raw_text = respuesta_ia.text
+        clean_json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', raw_text)
+        return json.loads(clean_json_text)
+
     except Exception as e:
         print(f"Error en el Redactor (Paso 1.3): {e}")
         return {"respuesta_principal": "Ocurrió un error al generar la respuesta JSON.", "puntos_clave": [], "fuente": ""}
@@ -192,8 +215,6 @@ def manejar_pregunta():
 # ==============================================================================
 # === FLUJO 2: GENERADOR DE CÓDIGO BLENDER (bpy) ===
 # ==============================================================================
-# Esta sección es para el generador de código puro.
-# Es 100% INDEPENDIENTE del Flujo 1. No usa Neo4j.
 
 # --- NUEVA FUNCIÓN "EXPERTA EN BPY" (Modo JSON y PURO) ---
 def generar_script_blender(prompt_usuario, modelo_gemini):
@@ -204,7 +225,6 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     """
     print(f"Paso 2.1: Generador de Script PURO - Creando script para: '{prompt_usuario}'")
     
-    # Este prompt es la clave. Es muy estricto y pide SÓLO el script.
     prompt_generador_bpy = f"""
     Eres un asistente experto en el API de Python (bpy) de Blender (versión 3.4 en adelante).
     La solicitud del usuario es: "{prompt_usuario}"
@@ -223,7 +243,7 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
 
     Responde SÓLO con un JSON que tenga esta estructura ÚNICA:
     {{
-      "script": "import bpy\n\n# (Tu código python aquí)\n\n"
+      "script": "import bpy\\n\\n# (Tu código python aquí)\\n\\n"
     }}
     
     NO incluyas explicaciones.
@@ -233,7 +253,6 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     """
     
     try:
-        # Forzamos la respuesta a ser JSON para evitar errores de sintaxis
         config_json = {"response_mime_type": "application/json"}
         
         response = modelo_gemini.generate_content(
@@ -241,27 +260,33 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
             generation_config=config_json
         )
         
-        # La IA nos da un JSON perfecto, lo cargamos en un dict
-        respuesta_dict = json.loads(response.text)
+        raw_text = response.text
+        clean_json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', raw_text)
+        respuesta_dict = json.loads(clean_json_text)
+        
         print("Paso 2.1: Generador de Script PURO - Script generado exitosamente.")
         return respuesta_dict
         
     except Exception as e:
         print(f"Error en Generador de Script (Paso 2.1): {e}")
+        error_message = re.sub(r'[\x00-\x1F\x7F]', '', str(e))
         return {
-            "script": f"# Error al generar el script.\n# {e}"
+            "script": f"# Error al generar el script.\n# {error_message}"
         }
 
 # --- NUEVO ENDPOINT 2: GENERADOR DE SCRIPT ---
 @app.route("/generar-script", methods=["POST"])
 def manejar_generacion_script():
     """
-    Este endpoint es para la nueva página.
-    Recibe: { "pregunta": "Crea un cubo rojo" }
-    Devuelve: { "script": "import bpy..." }
+    Este endpoint:
+    1. Llama a Gemini para generar el script.
+    2. GUARDA el script en Neo4j como un Asset PENDIENTE.
+    3. Devuelve el script y el Asset ID al cliente.
     """
+    driver = None
     try:
-        print("Manejando petición en /generar-script...")
+        print("Manejando petición en /generar-script (Fase 2: Guardado de Asset)...")
+        # Conexión a AI
         genai.configure(api_key=GOOGLE_API_KEY)
         modelo_gemini = genai.GenerativeModel(generative_model_name)
         
@@ -271,19 +296,60 @@ def manejar_generacion_script():
         
         prompt_usuario = data['pregunta']
         
-        # Llamamos a nuestra nueva función "experta en bpy"
-        respuesta_dict = generar_script_blender(prompt_usuario, modelo_gemini)
+        # 1. Generar el script
+        script_dict = generar_script_blender(prompt_usuario, modelo_gemini)
+        script_code = script_dict.get("script", "# No se generó código.")
         
-        # Devolvemos el JSON que nos dio la IA (sólo contiene el script)
-        return jsonify(respuesta_dict)
+        # Si la IA falló, devolvemos el error inmediatamente
+        if "# Error al generar el script" in script_code:
+             return jsonify(script_dict), 500
+
+        # 2. Conexión a Neo4j (Independiente del Flujo 1)
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD), max_connection_lifetime=60)
+        driver.verify_connectivity()
+        
+        # 3. Guardar el Asset PENDIENTE en Neo4j
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        
+        query = """
+        CREATE (a:Asset:GeneratedAsset {
+            prompt: $prompt,
+            script: $script,
+            status: 'PENDIENTE',
+            createdAt: $timestamp,
+            type: 'BLENDER_SCRIPT'
+        })
+        RETURN ID(a) AS asset_id
+        """
+        
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run(query, 
+                prompt=prompt_usuario, 
+                script=script_code, 
+                timestamp=timestamp
+            )
+            asset_id = result.single()["asset_id"]
+            print(f"Asset PENDIENTE creado en Neo4j. ID: {asset_id}")
+
+        # 4. Devolver la respuesta al cliente con el ID de rastreo
+        return jsonify({
+            "script": script_code,
+            "asset_id": asset_id,
+            "status": "PENDIENTE",
+            "message": "Script generado y guardado. Esperando ejecución por el módulo Worker."
+        })
 
     except Exception as e:
         print(f"--- ¡ERROR FATAL EN /generar-script! ---: {e}")
         return jsonify({
-            "script": f"# Error fatal en el servidor: {e}"
+            "script": f"# Error fatal en el servidor: {e}",
+            "asset_id": None,
+            "status": "FALLO"
         }), 500
     finally:
-        print("Manejando petición en /generar-script: Finalizado.")
+        if driver:
+            driver.close()
+            print("Manejando petición en /generar-script: Conexión a Neo4j cerrada.")
 
 
 # --- 5. Arrancar el servidor ---
