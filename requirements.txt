@@ -1,6 +1,6 @@
 Flask
 flask-cors
 gunicorn
-supabase
 google-generativeai
 python-dotenv
+neo4j
