@@ -10,6 +10,18 @@ from neo4j import GraphDatabase
 print("Iniciando API (Versión 14.0 - Fix 'SELECTALL')... Cargando variables.")
 load_dotenv()
 
+# --- ¡¡¡AÑADIR ESTAS LÍNEAS FALTANTES!!! ---
+# Leemos las variables de entorno (que Render provee) y las guardamos en variables de Python
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+NEO4J_URI = os.getenv('NEO4J_URI')
+NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
+NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
+NEO4J_DATABASE = os.getenv('NEO4J_DATABASE')
+
+embedding_model = "models/text-embedding-004"
+generative_model_name = "models/gemini-2.5-flash"
+# -----------------------------------------------
+
 # ... (Se omite el Flujo 1 idéntico) ...
 # ==============================================================================
 # === FLUJO 1: ASISTENTE DEL MANUAL (RAG + NEO4J) ===
