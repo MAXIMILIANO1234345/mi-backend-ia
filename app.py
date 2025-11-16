@@ -7,7 +7,7 @@ from flask_cors import CORS
 from neo4j import GraphDatabase
 
 # --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión Grafo ESTRICTA)... Cargando variables.")
+print("Iniciando API (Versión Grafo 5.0 - Query Planner)... Cargando variables.")
 load_dotenv()
 
 # Cargar todas las claves (se usarán dentro de la función)
@@ -38,29 +38,22 @@ def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
 
 # --- 3. LÓGICA DE IA DE MÚLTIPLES PASOS ---
 
-# PASO 1: EL PLANIFICADOR
+# PASO 1: EL PLANIFICADOR (¡MODIFICADO!)
 def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
-    """Paso 1: "Pensar" qué buscar."""
+    """Paso 1: "Pensar" QUÉ consultas de búsqueda generar."""
     print(f"Paso 1: Planificador - Creando plan para: '{pregunta_usuario}'")
-    lista_capitulos = []
-    try:
-        with driver.session(database=NEO4J_DATABASE) as session:
-            result = session.run("MATCH (c:Capitulo) RETURN c.titulo AS titulo")
-            lista_capitulos = [record['titulo'] for record in result]
-    except Exception as e:
-        print(f"Error obteniendo lista de capítulos: {e}")
 
+    # ¡NUEVO PROMPT! Pedimos consultas de búsqueda, no conceptos.
     prompt_planificador = f"""
     Eres un experto en el manual de Blender. La pregunta de un usuario es: "{pregunta_usuario}"
     
-    El manual tiene los siguientes capítulos:
-    {', '.join(lista_capitulos)}
-
-    Basado en la pregunta, ¿cuáles son los 3 conceptos o términos de búsqueda MÁS RELEVANTES que debo usar para encontrar la información en el manual?
-    ¿Y debo buscar 'Texto', 'Imagenes' o 'Ambos'?
+    Tu objetivo es generar 3 consultas de búsqueda (search queries) optimizadas para encontrar la información más relevante en una base de datos vectorial de texto.
+    Las consultas deben ser semánticamente ricas y capturar la intención del usuario.
+    
+    ¿Debo buscar 'Texto', 'Imagenes' o 'Ambos'?
 
     Responde SÓLO con un JSON. Ejemplo:
-    {{"conceptos_clave": ["Concepto 1", "Concepto 2"], "buscar": "Texto"}}
+    {{"consultas_de_busqueda": ["consulta optimizada 1", "consulta 2", "consulta 3"], "buscar": "Texto"}}
     """
     
     try:
@@ -71,29 +64,35 @@ def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
         return plan
     except Exception as e:
         print(f"Error en el Planificador (Paso 1): {e}.")
-        return {"conceptos_clave": [pregunta_usuario], "buscar": "Texto"}
+        # Plan de respaldo: usar la pregunta original como la única consulta
+        return {"consultas_de_busqueda": [pregunta_usuario], "buscar": "Texto"}
 
-# PASO 2: EL INVESTIGADOR
-def buscar_en_grafo(db_driver, conceptos_clave, buscar_texto=True, buscar_imagenes=False):
-    """Busca en Neo4j usando los conceptos clave del Planificador."""
-    print(f"Paso 2: Investigador - Buscando conceptos: {conceptos_clave}")
+# PASO 2: EL INVESTIGADOR (¡MODIFICADO!)
+def buscar_en_grafo(db_driver, consultas_de_busqueda, buscar_texto=True, buscar_imagenes=False):
+    """Busca en Neo4j usando las consultas generadas por el Planificador."""
+    print(f"Paso 2: Investigador - Buscando consultas: {consultas_de_busqueda}")
     contexto_encontrado = []
     
+    # Vectorizamos CADA consulta de búsqueda
     vectores_de_busqueda = []
-    for concepto in conceptos_clave:
-        vec = get_text_embedding(concepto, "RETRIEVAL_DOCUMENT")
+    for consulta in consultas_de_busqueda:
+        # ¡CAMBIO CLAVE! Usamos 'RETRIEVAL_QUERY' porque esto SÍ es una consulta.
+        vec = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
         if vec:
             vectores_de_busqueda.append(vec)
     
     if not vectores_de_busqueda:
-        vectores_de_busqueda = [get_text_embedding(conceptos_clave[0], "RETRIEVAL_QUERY")]
+        print("Error: No se pudieron generar vectores de búsqueda.")
+        return []
 
     
     with db_driver.session(database=NEO4J_DATABASE) as session:
+        # Hacemos una búsqueda por CADA vector y unimos los resultados
         for vector in vectores_de_busqueda:
             if buscar_texto:
+                # Busca 1 chunk por cada consulta optimizada
                 cypher_texto = """
-                    CALL db.index.vector.queryNodes('chunk_vector_index', 2, $vector) YIELD node AS item, score
+                    CALL db.index.vector.queryNodes('chunk_vector_index', 1, $vector) YIELD node AS item, score
                     MATCH (item)-[:PERTENECE_A]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
                     RETURN 'Texto' AS tipo, 
                            item.texto AS contenido, 
@@ -107,6 +106,7 @@ def buscar_en_grafo(db_driver, conceptos_clave, buscar_texto=True, buscar_imagen
                     contexto_encontrado.append(dict(record))
             
             if buscar_imagenes:
+                # Busca 1 imagen por cada consulta optimizada
                 cypher_img = """
                     CALL db.index.vector.queryNodes('imagen_vector_index', 1, $vector) YIELD node AS item, score
                     MATCH (item)-[:SE_ENCUENTRA_EN]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
@@ -121,6 +121,7 @@ def buscar_en_grafo(db_driver, conceptos_clave, buscar_texto=True, buscar_imagen
                 for record in result_img:
                     contexto_encontrado.append(dict(record))
 
+    # Limpiamos duplicados (si varias consultas encontraron el mismo chunk)
     contexto_limpio = []
     ids_vistos = set()
     for item in contexto_encontrado:
@@ -140,7 +141,6 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
     contexto_para_ia = ""
     fuentes_encontradas = set()
 
-    # (Esta parte no cambia, seguimos construyendo el contexto)
     if contexto_items:
         for item in contexto_items:
             fuente = f"{item['capitulo']} (Parte: {item['parte']}, Pág. {item['pagina']})"
@@ -153,15 +153,13 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
                 contexto_para_ia += f"--- Contexto de IMAGEN de '{fuente}' ---\n"
                 contexto_para_ia += f"[Imagen relevante disponible en: {item['contenido']}]\n\n"
     
-    # Preparamos las fuentes para la cita
     if fuentes_encontradas:
         fuentes_str = ", ".join(fuentes_encontradas)
         fuente_para_prompt = f"(Fuente: {fuentes_str})"
     else:
-        # Esto es solo un respaldo, la lógica principal ya no debería llegar aquí
         fuente_para_prompt = "" 
     
-    # --- ¡¡¡CAMBIO CRÍTICO: EL PROMPT ESTRICTO!!! ---
+    # PROMPT ESTRICTO
     prompt_para_ia = f"""
     Eres un asistente experto del manual de Blender. Tu ÚNICA tarea es responder la pregunta del usuario basándote ESTRICTA Y EXCLUSIVAMENTE en el 'Contexto' provisto.
 
@@ -227,14 +225,15 @@ def manejar_pregunta():
     
         # 4. Ejecutar el plan de 3 pasos
         plan = get_plan_de_busqueda(pregunta, driver, modelo_gemini)
-        conceptos = plan.get('conceptos_clave', [pregunta])
-        buscar_txt = "Texto" in plan.get('buscar', 'Texto')
-        buscar_img = "Imagenes" in plan.get('buscar', 'Texto')
-
-        contexto_items = buscar_en_grafo(driver, conceptos, buscar_txt, buscar_img)
         
-        # --- ¡¡¡CAMBIO CRÍTICO: REGLA DE ORO 1!!! ---
-        # Si la búsqueda (Paso 2) no devolvió NADA, no llamamos a la IA.
+        # ¡CAMBIO CLAVE! Usamos la nueva llave del JSON
+        consultas = plan.get('consultas_de_busqueda', [pregunta]) 
+        buscar_txt = "Texto" in plan.get('buscar', 'Texto')
+        buscar_img = "Imagenes" in plan.get('buscar', 'Texto') # 'Imagenes' no está en el JSON de ejemplo, 'Ambos' sí
+
+        contexto_items = buscar_en_grafo(driver, consultas, buscar_txt, buscar_img)
+        
+        # REGLA DE ORO 1
         if not contexto_items:
             print("No se encontró contexto en el grafo. Respondiendo directamente.")
             return jsonify({"respuesta": "Lo siento, no pude encontrar información sobre eso en mi base de conocimientos del manual."})
