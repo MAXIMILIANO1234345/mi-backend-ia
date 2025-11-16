@@ -26,7 +26,7 @@ if not all([NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, NEO4J_DATABASE]):
 
 # Modelos de IA
 embedding_model = "models/text-embedding-004"
-generative_model = "models/gemini-2.5-pro" # Usamos el PRO para razonar
+generative_model = "models/gemini-pro-latest" # Intermedio: Razonamiento Pro, Límite de Flash
 
 # Iniciar el "driver" de Neo4j (la conexión principal)
 try:
@@ -190,3 +190,4 @@ def manejar_pregunta():
 
 # --- 5. Arrancar el servidor ---
 # (El comando de Render `gunicorn app:app` llamará a 'app')
+
