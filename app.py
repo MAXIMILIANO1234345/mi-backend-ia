@@ -31,7 +31,7 @@ generative_model_name = "models/gemini-pro-latest"
 
 # Iniciar el "driver" de Neo4j
 try:
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD), max_connection_lifetime=600)
     driver.verify_connectivity()
     print("Conectado a Neo4j.")
 except Exception as e:
@@ -276,3 +276,4 @@ def manejar_pregunta():
 if __name__ == "__main__":
     # Esto es solo para pruebas locales
     app.run(debug=True, port=5000)
+
