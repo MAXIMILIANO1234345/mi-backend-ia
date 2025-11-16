@@ -22,14 +22,14 @@ if not supabase_url or not supabase_key:
     raise ValueError("No se encontraron las variables de Supabase en el archivo .env")
 supabase: Client = create_client(supabase_url, supabase_key)
 
-# Configurar el modelo de IA (cárgalo una vez)
+# Configurar el modelo de IA
 try:
     modelo_gemini = genai.GenerativeModel('models/gemini-2.5-flash')
 except Exception as e:
     print(f"Error al cargar el modelo de Gemini: {e}")
     modelo_gemini = None
 
-print("Clientes y modelo de IA configurados. Servidor listo para arrancar.")
+print("Clientes y modelo de IA (Estructurado) configurados. Servidor listo.")
 
 # --- 2. Lógica de RAG (convertida en una función) ---
 
@@ -40,7 +40,7 @@ def obtener_respuesta_ia(pregunta_usuario):
         return "Error: El modelo de IA no pudo ser cargado."
 
     try:
-        # --- PASO DE BÚSQUEDA (Retrieval) ---
+        # --- PASO 1: BÚSQUEDA VECTORIAL ---
         print(f"Recibida pregunta: '{pregunta_usuario}'")
         
         result = genai.embed_content(
@@ -51,45 +51,85 @@ def obtener_respuesta_ia(pregunta_usuario):
         query_vector = result['embedding']
         print("Pregunta vectorizada.")
 
+        # Buscamos en la tabla 'secciones'
         response = supabase.rpc('match_documentos', {
             'query_embedding': query_vector,
-            'match_threshold': 0.6, # Puedes ajustar este umbral si es necesario
-            'match_count': 3
+            'match_threshold': 0.6, # Umbral de similitud
+            'match_count': 5        # Traemos los 5 mejores chunks
         }).execute()
 
-        # --- CAMBIO 1: LÓGICA HÍBRIDA ---
-        # Ahora, en lugar de detenernos, solo preparamos el contexto
-        # si es que lo encontramos.
-        contexto = ""
+        contexto_para_ia = ""
+        fuentes_encontradas = set() # Para evitar duplicados
+
         if response.data:
-            print(f"Búsqueda en Supabase completada. Documentos encontrados: {len(response.data)}")
-            for doc in response.data:
-                contexto += doc['contenido'] + "\n---\n"
+            print(f"Búsqueda vectorial completada. {len(response.data)} chunks encontrados.")
+            
+            # --- PASO 2: ¡EL "RAZONAMIENTO" SQL! ---
+            for chunk in response.data:
+                chunk_id = chunk['id']
+                chunk_contenido = chunk['contenido']
+                
+                try:
+                    # Esta consulta SQL une las 3 tablas
+                    info_estructural = supabase.table('secciones').select(
+                        'capitulos ( titulo, partes ( titulo ) )'
+                    ).eq('id', chunk_id).single().execute()
+                    
+                    # --- MEJORA DE ROBUSTEZ ---
+                    # Verificamos que los datos existen antes de acceder a ellos
+                    if info_estructural.data and info_estructural.data.get('capitulos'):
+                        capitulo_info = info_estructural.data['capitulos']
+                        cap_titulo = capitulo_info.get('titulo', 'Capítulo Desconocido')
+                        
+                        if capitulo_info.get('partes'):
+                            parte_titulo = capitulo_info['partes'].get('titulo', 'Parte Desconocida')
+                        else:
+                            parte_titulo = 'Parte Desconocida' # Si el capítulo no tiene parte
+                        
+                        fuente_completa = f"{cap_titulo} (Parte: {parte_titulo})"
+                        fuentes_encontradas.add(fuente_completa)
+                        
+                        contexto_para_ia += f"--- Contexto de '{fuente_completa}' ---\n"
+                        contexto_para_ia += f"{chunk_contenido}\n\n"
+                        
+                    else:
+                        contexto_para_ia += f"--- Contexto (Sin Categorizar) ---\n"
+                        contexto_para_ia += f"{chunk_contenido}\n\n"
+
+                except Exception as e:
+                    print(f"Error al buscar info estructural para chunk {chunk_id}: {e}")
+                    contexto_para_ia += f"--- Contexto (Error de Búsqueda) ---\n"
+                    contexto_para_ia += f"{chunk_contenido}\n\n"
+        
         else:
-            # Si no hay datos, el 'contexto' se queda vacío ""
-            print("No se encontró contexto en los documentos.")
+            print("No se encontró contexto en los documentos (búsqueda vectorial vacía).")
+
+
+        # --- PASO 3: GENERACIÓN (con el prompt Híbrido) ---
         
-        # --- PASO DE GENERACIÓN (Generation) ---
+        if fuentes_encontradas:
+            fuentes_str = ", ".join(fuentes_encontradas)
+            fuente_para_prompt = f"(Fuente: {fuentes_str})"
+        else:
+            fuente_para_prompt = "(Fuente: Conocimiento General)"
+            
         
-        # --- CAMBIO 2: PROMPT HÍBRIDO ---
-        # Este es el nuevo prompt que prioriza el contexto pero
-        # permite usar conocimiento general y cita sus fuentes.
         prompt_para_ia = f"""
-        Eres un asistente de ayuda para una plataforma educativa. Tu tarea es responder la pregunta del usuario.
+        Eres un asistente de ayuda experto en el manual de Blender. Tu tarea es responder la pregunta del usuario.
         
         Sigue estas instrucciones:
         
-        1.  Primero, revisa el 'Contexto' provisto y busca la respuesta allí. El contexto es tu fuente principal de verdad.
+        1.  Primero, revisa el 'Contexto' provisto. El contexto está organizado por capítulos y partes del manual.
         2.  Si la respuesta se encuentra CLARAMENTE en el 'Contexto', responde la pregunta basándote en él.
         3.  Si la respuesta NO se encuentra en el 'Contexto', o el contexto está vacío, usa tu conocimiento general para responder.
         4.  **IMPORTANTE:** Al final de tu respuesta, debes indicar de dónde provino la información.
             * Si usaste el contexto, termina tu respuesta con:
-                "(Fuente: Documentos de la Plataforma)"
+                "{fuente_para_prompt}"
             * Si usaste tu conocimiento general, termina tu respuesta con:
                 "(Fuente: Conocimiento General)"
 
         Contexto:
-        {contexto}
+        {contexto_para_ia}
 
         Pregunta:
         {pregunta_usuario}
@@ -97,7 +137,7 @@ def obtener_respuesta_ia(pregunta_usuario):
         Respuesta:
         """
 
-        print("Generando respuesta con Gemini...")
+        print("Generando respuesta estructurada con Gemini...")
         respuesta_ia = modelo_gemini.generate_content(prompt_para_ia)
         
         return respuesta_ia.text
@@ -109,8 +149,8 @@ def obtener_respuesta_ia(pregunta_usuario):
 
 # --- 3. Configurar el Servidor Flask ---
 
-app = Flask(__name__)  # Crea la aplicación web
-CORS(app)              # Habilita CORS
+app = Flask(__name__)
+CORS(app)
 
 # --- 4. Crear el "Endpoint" de la API ---
 
