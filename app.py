@@ -7,7 +7,7 @@ from flask_cors import CORS
 from neo4j import GraphDatabase
 
 # --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión Grafo 5.0 - Query Planner)... Cargando variables.")
+print("Iniciando API (Versión Grafo 6.0 - FILTRADO)... Cargando variables.")
 load_dotenv()
 
 # Cargar todas las claves (se usarán dentro de la función)
@@ -36,24 +36,37 @@ def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
         print(f"Error al vectorizar texto (tipo: {task_type}): {e}")
         return None
 
-# --- 3. LÓGICA DE IA DE MÚLTIPLES PASOS ---
+# --- 3. LÓGICA DE IA DE MÚLTIPLES PASOS (LA VERSIÓN BUENA) ---
 
-# PASO 1: EL PLANIFICADOR (¡MODIFICADO!)
+# PASO 1: EL PLANIFICADOR (DECIDE QUÉ CAPÍTULOS USAR)
 def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
-    """Paso 1: "Pensar" QUÉ consultas de búsqueda generar."""
+    """
+    Paso 1: La IA "piensa" qué capítulos son relevantes.
+    """
     print(f"Paso 1: Planificador - Creando plan para: '{pregunta_usuario}'")
-
-    # ¡NUEVO PROMPT! Pedimos consultas de búsqueda, no conceptos.
+    lista_capitulos = []
+    try:
+        # Obtenemos la lista de TODOS los capítulos desde el grafo
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run("MATCH (c:Capitulo) RETURN c.titulo AS titulo")
+            lista_capitulos = [record['titulo'] for record in result]
+    except Exception as e:
+        print(f"Error obteniendo lista de capítulos: {e}")
+        # Si falla, el planificador no tendrá la lista, pero puede continuar
+    
+    # ¡NUEVO PROMPT! Le pedimos que ELIJA de la lista de capítulos.
     prompt_planificador = f"""
-    Eres un experto en el manual de Blender. La pregunta de un usuario es: "{pregunta_usuario}"
+    Eres un bibliotecario experto del manual de Blender. La pregunta de un usuario es: "{pregunta_usuario}"
     
-    Tu objetivo es generar 3 consultas de búsqueda (search queries) optimizadas para encontrar la información más relevante en una base de datos vectorial de texto.
-    Las consultas deben ser semánticamente ricas y capturar la intención del usuario.
-    
-    ¿Debo buscar 'Texto', 'Imagenes' o 'Ambos'?
+    El manual tiene los siguientes capítulos:
+    {json.dumps(lista_capitulos)}
 
+    Tu tarea es decidir en qué capítulos debo buscar la respuesta.
+    Por favor, devuelve una lista JSON de los **títulos de capítulo exactos** que sean más relevantes.
+    Si la pregunta es general (como 'hola' o 'qué es Blender'), busca en la introducción.
+    
     Responde SÓLO con un JSON. Ejemplo:
-    {{"consultas_de_busqueda": ["consulta optimizada 1", "consulta 2", "consulta 3"], "buscar": "Texto"}}
+    {{"capitulos_objetivo": ["1.2. El Entorno de Trabajo: Áreas y Editores", "1.3. Navegación 3D Esencial"]}}
     """
     
     try:
@@ -64,76 +77,81 @@ def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
         return plan
     except Exception as e:
         print(f"Error en el Planificador (Paso 1): {e}.")
-        # Plan de respaldo: usar la pregunta original como la única consulta
-        return {"consultas_de_busqueda": [pregunta_usuario], "buscar": "Texto"}
+        # Plan de respaldo: Si el planificador falla, no filtramos (lista vacía)
+        return {"capitulos_objetivo": []}
 
-# PASO 2: EL INVESTIGADOR (¡MODIFICADO!)
-def buscar_en_grafo(db_driver, consultas_de_busqueda, buscar_texto=True, buscar_imagenes=False):
-    """Busca en Neo4j usando las consultas generadas por el Planificador."""
-    print(f"Paso 2: Investigador - Buscando consultas: {consultas_de_busqueda}")
+# PASO 2: EL INVESTIGADOR (FILTRA POR GRAFO, LUEGO BUSCA POR VECTOR)
+def buscar_en_grafo(db_driver, vector_pregunta, capitulos_objetivo, buscar_imagenes=False):
+    """
+    Busca en Neo4j, PERO filtra los resultados solo a los capítulos relevantes.
+    """
+    print(f"Paso 2: Investigador - Buscando en capítulos: {capitulos_objetivo}")
     contexto_encontrado = []
     
-    # Vectorizamos CADA consulta de búsqueda
-    vectores_de_busqueda = []
-    for consulta in consultas_de_busqueda:
-        # ¡CAMBIO CLAVE! Usamos 'RETRIEVAL_QUERY' porque esto SÍ es una consulta.
-        vec = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
-        if vec:
-            vectores_de_busqueda.append(vec)
-    
-    if not vectores_de_busqueda:
-        print("Error: No se pudieron generar vectores de búsqueda.")
-        return []
-
-    
     with db_driver.session(database=NEO4J_DATABASE) as session:
-        # Hacemos una búsqueda por CADA vector y unimos los resultados
-        for vector in vectores_de_busqueda:
-            if buscar_texto:
-                # Busca 1 chunk por cada consulta optimizada
-                cypher_texto = """
-                    CALL db.index.vector.queryNodes('chunk_vector_index', 1, $vector) YIELD node AS item, score
-                    MATCH (item)-[:PERTENECE_A]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
-                    RETURN 'Texto' AS tipo, 
-                           item.texto AS contenido, 
-                           item.pagina AS pagina, 
-                           c.titulo AS capitulo, 
-                           p.titulo AS parte, 
-                           score
-                """
-                result = session.run(cypher_texto, vector=vector)
-                for record in result:
-                    contexto_encontrado.append(dict(record))
-            
-            if buscar_imagenes:
-                # Busca 1 imagen por cada consulta optimizada
-                cypher_img = """
-                    CALL db.index.vector.queryNodes('imagen_vector_index', 1, $vector) YIELD node AS item, score
-                    MATCH (item)-[:SE_ENCUENTRA_EN]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
-                    RETURN 'Imagen' AS tipo, 
-                           item.url AS contenido, 
-                           item.pagina AS pagina, 
-                           c.titulo AS capitulo, 
-                           p.titulo AS parte, 
-                           score
-                """
-                result_img = session.run(cypher_img, vector=vector)
-                for record in result_img:
-                    contexto_encontrado.append(dict(record))
+        
+        # --- ¡LA CONSULTA MÁGICA (FILTRADO DE GRAFO)! ---
+        # 1. Busca los 10 chunks más parecidos en TODA la base de datos (Búsqueda Vectorial)
+        # 2. LUEGO, filtra esa lista para quedarse solo con los chunks que
+        #    pertenecen a los capítulos que el Planificador eligió.
+        # 3. Devuelve los 3 mejores de esa lista filtrada.
+        
+        # Si la lista de capítulos está vacía (porque el planificador falló o no encontró),
+        # hacemos una búsqueda simple sin filtro.
+        if not capitulos_objetivo:
+            print("Paso 2: Investigador - Planificador no dio capítulos, haciendo búsqueda simple.")
+            cypher_base = """
+                CALL db.index.vector.queryNodes('chunk_vector_index', 3, $vector) YIELD node AS item, score
+            """
+        else:
+            print("Paso 2: Investigador - Aplicando filtro de capítulos.")
+            cypher_base = """
+                CALL db.index.vector.queryNodes('chunk_vector_index', 10, $vector) YIELD node AS item, score
+                MATCH (item)-[:PERTENECE_A]->(c:Capitulo)
+                WHERE c.titulo IN $capitulos_objetivo
+            """
 
-    # Limpiamos duplicados (si varias consultas encontraron el mismo chunk)
-    contexto_limpio = []
-    ids_vistos = set()
-    for item in contexto_encontrado:
-        item_id = (item['tipo'], item['contenido'])
-        if item_id not in ids_vistos:
-            contexto_limpio.append(item)
-            ids_vistos.add(item_id)
-            
-    print(f"Paso 2: Investigador - Búsqueda completada. {len(contexto_limpio)} items únicos encontrados.")
-    return contexto_limpio
+        # Consulta de Texto
+        cypher_texto = cypher_base + """
+            MATCH (item)-[:PERTENECE_A]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
+            RETURN 'Texto' AS tipo, 
+                   item.texto AS contenido, 
+                   item.pagina AS pagina, 
+                   c.titulo AS capitulo, 
+                   p.titulo AS parte, 
+                   score
+            ORDER BY score DESC
+            LIMIT 3
+        """
+        
+        result_texto = session.run(cypher_texto, vector=vector_pregunta, capitulos_objetivo=capitulos_objetivo)
+        for record in result_texto:
+            contexto_encontrado.append(dict(record))
 
-# PASO 3: EL REDACTOR
+        # (La lógica de imágenes se mantiene, por si las añades en el futuro)
+        if buscar_imagenes:
+            cypher_img = """
+                CALL db.index.vector.queryNodes('imagen_vector_index', 2, $vector) YIELD node AS item, score
+                MATCH (item)-[:SE_ENCUENTRA_EN]->(c:Capitulo)
+                WHERE c.titulo IN $capitulos_objetivo
+                MATCH (c)-[:PERTENECE_A]->(p:Parte)
+                RETURN 'Imagen' AS tipo, 
+                       item.url AS contenido, 
+                       item.pagina AS pagina, 
+                       c.titulo AS capitulo, 
+                       p.titulo AS parte, 
+                       score
+                ORDER BY score DESC
+                LIMIT 2
+            """
+            result_img = session.run(cypher_img, vector=vector_pregunta, capitulos_objetivo=capitulos_objetivo)
+            for record in result_img:
+                contexto_encontrado.append(dict(record))
+
+    print(f"Paso 2: Investigador - Búsqueda completada. {len(contexto_encontrado)} items filtrados encontrados.")
+    return contexto_encontrado
+
+# PASO 3: EL REDACTOR (Ahora recibe contexto 100% limpio)
 def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
     """Toma el contexto LIMPIO y genera la respuesta final."""
     print("Paso 3: Redactor - Generando respuesta final...")
@@ -226,12 +244,16 @@ def manejar_pregunta():
         # 4. Ejecutar el plan de 3 pasos
         plan = get_plan_de_busqueda(pregunta, driver, modelo_gemini)
         
-        # ¡CAMBIO CLAVE! Usamos la nueva llave del JSON
-        consultas = plan.get('consultas_de_busqueda', [pregunta]) 
-        buscar_txt = "Texto" in plan.get('buscar', 'Texto')
-        buscar_img = "Imagenes" in plan.get('buscar', 'Texto') # 'Imagenes' no está en el JSON de ejemplo, 'Ambos' sí
+        capitulos = plan.get('capitulos_objetivo', []) 
+        buscar_img = "Imagenes" in plan.get('buscar', 'Ambos') # (preparado para el futuro)
 
-        contexto_items = buscar_en_grafo(driver, consultas, buscar_txt, buscar_img)
+        # Vectorizamos la pregunta original
+        vector_pregunta = get_text_embedding(pregunta)
+        if not vector_pregunta:
+            return jsonify({"respuesta": "Error: No se pudo procesar tu pregunta."}), 500
+
+        # Buscamos en el grafo CON el filtro de capítulos
+        contexto_items = buscar_en_grafo(driver, vector_pregunta, capitulos, buscar_img)
         
         # REGLA DE ORO 1
         if not contexto_items:
