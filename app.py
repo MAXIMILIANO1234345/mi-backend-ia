@@ -19,7 +19,7 @@ NEO4J_DATABASE = os.getenv('NEO4J_DATABASE')
 
 # Modelos de IA
 embedding_model = "models/text-embedding-004"
-generative_model_name = "models/gemini-pro-latest" # Intermedio
+generative_model_name = "models/gemini-2.5-flash" # Rápido y con alto límite de peticiones # Intermedio
 
 # --- 2. Funciones de Ayuda ---
 
@@ -281,3 +281,4 @@ def manejar_pregunta():
 # --- 5. Arrancar el servidor ---
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
