@@ -69,10 +69,19 @@ def obtener_respuesta_ia(pregunta_usuario):
         
         # --- PASO DE GENERACIÓN (Generation) ---
         
-        prompt_para_ia = f"""
-        Eres un asistente de ayuda para una plataforma educativa.
-        Responde la pregunta del usuario de forma clara y amable, basándote ÚNICAMENTE en el siguiente contexto.
-        Si la respuesta no está en el contexto, di que no tienes esa información.
+ prompt_para_ia = f"""
+        Eres un asistente de ayuda para una plataforma educativa. Tu tarea es responder la pregunta del usuario.
+        
+        Sigue estas instrucciones:
+        
+        1.  Primero, revisa el 'Contexto' provisto y busca la respuesta allí. El contexto es tu fuente principal de verdad.
+        2.  Si la respuesta se encuentra CLARAMENTE en el 'Contexto', responde la pregunta basándote en él.
+        3.  Si la respuesta NO se encuentra en el 'Contexto', o el contexto no es relevante, usa tu conocimiento general para responder.
+        4.  **IMPORTANTE:** Al final de tu respuesta, debes indicar de dónde provino la información.
+            * Si usaste el contexto, termina tu respuesta con:
+                "(Fuente: Documentos de la Plataforma)"
+            * Si usaste tu conocimiento general, termina tu respuesta con:
+                "(Fuente: Conocimiento General)"
 
         Contexto:
         {contexto}
@@ -125,4 +134,5 @@ def manejar_pregunta():
 if __name__ == "__main__":
     # Esto permite ejecutar el servidor con "python app.py"
     # El 'debug=True' hace que el servidor se reinicie solo si haces cambios.
+
     app.run(debug=True, port=5000)
