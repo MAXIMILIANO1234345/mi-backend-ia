@@ -9,7 +9,7 @@ import re
 import datetime # Importamos datetime para añadir timestamps
 
 # --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión 17.0 - Fix Visibilidad de RAG)... Cargando variables.")
+print("Iniciando API (Versión 19.0 - Reglas Estrictas de API)... Cargando variables.")
 load_dotenv()
 
 # --- Leemos variables de entorno (Corregidas) ---
@@ -23,10 +23,13 @@ embedding_model = "models/text-embedding-004"
 generative_model_name = "models/gemini-2.5-flash"
 
 # --- 2. Funciones de Ayuda (Comunes) ---
-# ... (get_text_embedding es idéntico) ...
 def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
     """Vectoriza texto."""
     try:
+        # Aseguramos que la API de GenAI esté configurada antes de usarla
+        if not genai.get_model(embedding_model):
+             genai.configure(api_key=GOOGLE_API_KEY)
+             
         result = genai.embed_content(
             model=embedding_model,
             content=text_chunk,
@@ -74,7 +77,7 @@ def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
         print(f"Error en el Planificador (Paso 1.1): {e}.")
         return {"capitulo_enfocado": None, "consultas_busqueda": [pregunta_usuario]}
 
-# PASO 1.2: EL INVESTIGADOR (Sin cambios)
+# PASO 1.2: EL INVESTIGADOR
 def buscar_en_grafo(db_driver, plan):
     consultas = plan.get('consultas_busqueda', [])
     capitulo_enfocado = plan.get('capitulo_enfocado')
@@ -82,12 +85,11 @@ def buscar_en_grafo(db_driver, plan):
     contexto_encontrado = []
     vectores_de_busqueda = []
     
-    # --- LA FUNCIÓN SE LLAMA DIRECTAMENTE AQUÍ ---
     for consulta in consultas:
+        # Llamamos a la función de embedding
         vec = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
         if vec:
             vectores_de_busqueda.append(vec)
-    # ---------------------------------------------
 
     if not vectores_de_busqueda: return []
     with db_driver.session(database=NEO4J_DATABASE) as session:
@@ -165,8 +167,7 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
         print(f"Error en el Redactor (Paso 1.3): {e}")
         return {"respuesta_principal": "Ocurrió un error al generar la respuesta JSON.", "puntos_clave": [], "fuente": ""}
 
-# --- ¡¡¡CORRECCIÓN AQUÍ!!! ---
-# Inicializamos la aplicación Flask ANTES de definir las rutas.
+# --- Inicialización de Flask ---
 app = Flask(__name__)
 CORS(app)
 
@@ -178,9 +179,11 @@ def manejar_pregunta():
     driver = None
     try:
         print("Manejando petición en /preguntar...")
+        # Conexión a Neo4j
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD), max_connection_lifetime=60)
         driver.verify_connectivity()
         
+        # Conexión a AI
         genai.configure(api_key=GOOGLE_API_KEY)
         modelo_gemini = genai.GenerativeModel(generative_model_name)
         
@@ -189,6 +192,7 @@ def manejar_pregunta():
             return jsonify({"error": "No se proporcionó una 'pregunta'"}), 400
         pregunta = data['pregunta']
     
+        # Ejecutar flujo RAG
         plan = get_plan_de_busqueda(pregunta, driver, modelo_gemini)
         contexto_items = buscar_en_grafo(driver, plan)
         
@@ -225,6 +229,7 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     """
     print(f"Paso 2.1: Generador de Script PURO - Creando script para: '{prompt_usuario}'")
     
+    # Este es el prompt v19 con todas las reglas
     prompt_generador_bpy = f"""
     Eres un asistente experto en el API de Python (bpy) de Blender (versión 3.4 en adelante).
     La solicitud del usuario es: "{prompt_usuario}"
@@ -233,17 +238,21 @@ def generar_script_blender(prompt_usuario, modelo_gemini):
     Sigue estas reglas OBLIGATORIAMENTE:
     1.  Importa `bpy`.
     2.  Limpia SIEMPRE la escena por defecto al inicio (cubo, luz, cámara).
-    3.  Usa métodos modernos (versión 3.4+). Por ejemplo, prefiere manipular datos directamente (ej. `obj.location`, `obj.select_set(True)`) en lugar de operadores de contexto (`bpy.ops.transform.translate()`, `bpy.ops.object.select_all()`), a menos que sea estrictamente necesario.
-    4.  Crea los objetos, materiales, luces y cámara necesarios.
-    5.  Coloca la cámara en una posición razonable para ver los objetos creados.
-    6.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
-    7.  Configura la ruta de salida a '/tmp/render_result.png'.
-    8.  NO uses el parámetro `use_confirm=True`. Está obsoleto.
-    9.  REGLA DE SELECCIÓN: Si usas `bpy.ops.object.select_all()`, el parámetro es `action='SELECT'` o `action='DESELECT'`. El enum 'SELECTALL' es incorrecto y obsoleto.
+    3.  REGLA DE API MODERNA: Usa manipulación de datos directa (ej. `bpy.data.objects`, `obj.location`) siempre que sea posible. EVITA `bpy.ops` (ej. `bpy.ops.transform.translate`) a menos que no haya alternativa (como `bpy.ops.object.modifier_add`).
+    4.  REGLA DE COLECCIÓN (¡MUY IMPORTANTE!): Los objetos nuevos se enlazan con `bpy.context.collection.objects.link(obj)`, NO con el obsoleto `bpy.context.scene.objects.link(obj)`.
+    5.  REGLA DE SELECCIÓN: La selección se maneja con `obj.select_set(True)`. El antiguo `obj.select = True` está obsoleto y fallará.
+    6.  REGLA DE OBJETO ACTIVO: El objeto activo se establece con `bpy.context.view_layer.objects.active = obj`, NO con el obsoleto `bpy.context.scene.objects.active`.
+    7.  Crea los objetos, materiales, luces y cámara necesarios.
+    8.  Coloca la cámara en una posición razonable para ver los objetos creados.
+    9.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
+    10. Configura la ruta de salida a '/tmp/render_result.png'.
+    11. NO uses el parámetro `use_confirm=True`. Está obsoleto.
+    12. REGLA DE SELECCIÓN (OPS): Si usas `bpy.ops.object.select_all()`, el parámetro es `action='SELECT'` o `action='DESELECT'`. El enum 'SELECTALL' es incorrecto y obsoleto.
+    13. REGLA DE MATERIAL EMISIVO: El input de emisión en el nodo Principled BSDF se llama 'Emission' (para el color) y 'Emission Strength' (para la intensidad). El input 'Emission Color' ya no existe y es incorrecto.
 
     Responde SÓLO con un JSON que tenga esta estructura ÚNICA:
     {{
-      "script": "import bpy\\n\\n# (Tu código python aquí)\\n\\n"
+      "script": "import bpy\n\n# (Tu código python aquí)\n\n"
     }}
     
     NO incluyas explicaciones.
