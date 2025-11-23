@@ -1,35 +1,40 @@
 import os
-from dotenv import load_dotenv
-import google.generativeai as genai
 import json
+import re
+import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from neo4j import GraphDatabase
-import re
-import datetime # Importamos datetime para añadir timestamps
+from dotenv import load_dotenv
+import google.generativeai as genai
+from supabase import create_client, Client
 
-# --- 1. Cargar "secretos" y configurar clientes ---
-print("Iniciando API (Versión 19.0 - Reglas Estrictas de API)... Cargando variables.")
+# --- 1. CONFIGURACIÓN E INICIALIZACIÓN ---
+print("Iniciando API (Versión 20.0 - Render + Supabase)... Cargando variables.")
 load_dotenv()
 
-# --- Leemos variables de entorno (Corregidas) ---
+# --- Leemos variables de entorno ---
+# En Render, estas se configuran en el Dashboard "Environment Variables"
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-NEO4J_URI = os.getenv('NEO4J_URI')
-NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
-NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
-NEO4J_DATABASE = os.getenv('NEO4J_DATABASE')
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
+# Modelos
 embedding_model = "models/text-embedding-004"
 generative_model_name = "models/gemini-2.5-flash"
 
+# --- Inicializar Clientes ---
+try:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    # Cliente de Supabase
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Conexión a Supabase y Gemini inicializada correctamente.")
+except Exception as e:
+    print(f"❌ Error fatal iniciando clientes: {e}")
+
 # --- 2. Funciones de Ayuda (Comunes) ---
 def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
-    """Vectoriza texto."""
+    """Vectoriza texto usando Gemini."""
     try:
-        # Aseguramos que la API de GenAI esté configurada antes de usarla
-        if not genai.get_model(embedding_model):
-             genai.configure(api_key=GOOGLE_API_KEY)
-             
         result = genai.embed_content(
             model=embedding_model,
             content=text_chunk,
@@ -41,27 +46,24 @@ def get_text_embedding(text_chunk, task_type="RETRIEVAL_QUERY"):
         return None
 
 # ==============================================================================
-# === FLUJO 1: ASISTENTE DEL MANUAL (RAG + NEO4J) ===
+# === FLUJO 1: ASISTENTE DEL MANUAL (RAG + SUPABASE) ===
 # ==============================================================================
 
 # PASO 1.1: EL PLANIFICADOR (Modo JSON)
-def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
+def get_plan_de_busqueda(pregunta_usuario, modelo_gemini):
     print(f"Paso 1.1: Planificador - Creando plan para: '{pregunta_usuario}'")
-    lista_capitulos = []
-    try:
-        with driver.session(database=NEO4J_DATABASE) as session:
-            result = session.run("MATCH (c:Capitulo) RETURN c.titulo AS titulo")
-            lista_capitulos = [record['titulo'] for record in result]
-    except Exception as e:
-        print(f"Error obteniendo lista de capítulos: {e}")
+    
+    # Nota: Ya no consultamos la lista de capítulos a la BD para ahorrar tiempo.
+    # Dejamos que el LLM infiera el contexto.
     
     prompt_planificador = f"""
-    Eres un experto en el manual de Blender. La pregunta de un usuario es: "{pregunta_usuario}"
-    El manual tiene los siguientes capítulos: {json.dumps(lista_capitulos)}
+    Eres un experto en el manual de Blender (Proyecto 17). La pregunta de un usuario es: "{pregunta_usuario}"
+    
     Tu tarea es doble:
-    1.  Analiza la pregunta: ¿A cuál de estos capítulos pertenece MÁS PROBABLEMENTE esta pregunta?
-    2.  Genera Consultas: Genera 2 consultas de búsqueda optimizadas para encontrar la respuesta.
-    Responde SÓLO con la estructura JSON: {{"capitulo_enfocado": "...", "consultas_busqueda": ["..."]}}
+    1.  Analiza la pregunta: ¿A qué tema o capítulo pertenece probablemente?
+    2.  Genera Consultas: Genera 2 consultas de búsqueda optimizadas para encontrar la respuesta en la base vectorial.
+    
+    Responde SÓLO con la estructura JSON: {{"capitulo_enfocado": "Tema probable", "consultas_busqueda": ["consulta 1", "consulta 2"]}}
     """
     try:
         config_json = {"response_mime_type": "application/json"}
@@ -75,68 +77,70 @@ def get_plan_de_busqueda(pregunta_usuario, driver, modelo_gemini):
         return plan
     except Exception as e:
         print(f"Error en el Planificador (Paso 1.1): {e}.")
-        return {"capitulo_enfocado": None, "consultas_busqueda": [pregunta_usuario]}
+        return {"capitulo_enfocado": "General", "consultas_busqueda": [pregunta_usuario]}
 
-# PASO 1.2: EL INVESTIGADOR
-def buscar_en_grafo(db_driver, plan):
+# PASO 1.2: EL INVESTIGADOR (Supabase RPC)
+def buscar_en_supabase(plan):
     consultas = plan.get('consultas_busqueda', [])
     capitulo_enfocado = plan.get('capitulo_enfocado')
-    print(f"Paso 1.2: Investigador - Buscando consultas: {consultas} (Enfocado en: {capitulo_enfocado})")
-    contexto_encontrado = []
-    vectores_de_busqueda = []
+    print(f"Paso 1.2: Investigador - Buscando consultas: {consultas}")
+    
+    resultados_unicos = {} # Diccionario para deduplicar por ID
     
     for consulta in consultas:
-        # Llamamos a la función de embedding
-        vec = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
-        if vec:
-            vectores_de_busqueda.append(vec)
+        vector = get_text_embedding(consulta, task_type="RETRIEVAL_QUERY") 
+        if not vector: continue
 
-    if not vectores_de_busqueda: return []
-    with db_driver.session(database=NEO4J_DATABASE) as session:
-        params = {"vectors": vectores_de_busqueda, "capitulo_enfocado": capitulo_enfocado}
-        cypher_query = """
-            UNWIND $vectors AS vector
-            CALL db.index.vector.queryNodes('chunk_vector_index', 3, vector) YIELD node AS item, score
-            MATCH (item)-[:PERTENECE_A]->(c:Capitulo)-[:PERTENECE_A]->(p:Parte)
-            WITH item, score, c, p,
-                 CASE
-                   WHEN $capitulo_enfocado IS NULL THEN score
-                   WHEN c.titulo = $capitulo_enfocado THEN score + 0.1
-                   ELSE score
-                 END AS boosted_score
-            RETURN 'Texto' AS tipo, item.texto AS contenido, item.pagina AS pagina, 
-                   c.titulo AS capitulo, p.titulo AS parte, boosted_score AS score
-            ORDER BY score DESC LIMIT 3
-        """
-        result = session.run(cypher_query, params)
-        contexto_encontrado = [dict(record) for record in result]
-    contexto_limpio = []
-    ids_vistos = set()
-    for item in contexto_encontrado:
-        item_id = item['contenido']
-        if item_id not in ids_vistos:
-            contexto_limpio.append(item)
-            ids_vistos.add(item_id)
-    print(f"Paso 1.2: Investigador - Búsqueda completada. {len(contexto_limpio)} items únicos encontrados.")
+        try:
+            # Llamada a la función remota (RPC) en Supabase Postgres
+            # Esta función 'match_manual' debe existir en tu base de datos SQL
+            response = supabase.rpc('match_manual', {
+                'query_embedding': vector,
+                'match_threshold': 0.5, # Ajustar umbral de similitud (0.0 a 1.0)
+                'match_count': 3
+            }).execute()
+            
+            # Procesar resultados
+            if response.data:
+                for item in response.data:
+                    # Usamos el ID como clave para evitar duplicados si las 2 consultas traen lo mismo
+                    item_id = item.get('id')
+                    if item_id not in resultados_unicos:
+                        resultados_unicos[item_id] = item
+                        
+        except Exception as e:
+            print(f"Error buscando en Supabase: {e}")
+
+    # Convertir diccionario a lista
+    contexto_limpio = list(resultados_unicos.values())
+    print(f"Paso 1.2: Investigador - Búsqueda completada. {len(contexto_limpio)} items únicos.")
     return contexto_limpio
-
 
 # PASO 1.3: EL REDACTOR (Modo JSON)
 def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
     print("Paso 1.3: Redactor - Generando respuesta JSON estructurada...")
     contexto_para_ia = ""
     fuente_unica = ""
+    
     if contexto_items:
         fuentes_encontradas = set()
         for item in contexto_items:
-            fuente = f"{item['capitulo']} (Parte: {item['parte']}, Pág {item['pagina']})"
+            # Extraer metadata del JSONB de Supabase
+            meta = item.get('metadata', {})
+            contenido = item.get('content', '')
+            
+            cap = meta.get('capitulo', 'Sección')
+            pag = meta.get('pagina', '?')
+            
+            fuente = f"{cap} (Pág {pag})"
             fuentes_encontradas.add(fuente)
-            contexto_para_ia += f"--- Contexto de TEXTO de '{fuente}' ---\n{item['contenido']}\n\n"
+            contexto_para_ia += f"--- Contexto de TEXTO de '{fuente}' ---\n{contenido}\n\n"
+            
         if fuentes_encontradas:
             fuente_unica = ", ".join(fuentes_encontradas)
     
     prompt_para_ia = f"""
-    Eres un asistente experto del manual de Blender. Basándote ESTRICTAMENTE en el 'Contexto' provisto, responde la 'Pregunta'.
+    Eres un asistente experto del manual de Blender (Proyecto 17). Basándote ESTRICTAMENTE en el 'Contexto' provisto, responde la 'Pregunta'.
     Debes responder SÓLO con un JSON con esta estructura:
     {{
       "respuesta_principal": "Un resumen en párrafo.",
@@ -171,37 +175,24 @@ def generar_respuesta_final(pregunta_usuario, contexto_items, modelo_gemini):
 app = Flask(__name__)
 CORS(app)
 
-
 # --- ENDPOINT 1: ASISTENTE DEL MANUAL ---
 @app.route("/preguntar", methods=["POST"])
 def manejar_pregunta():
-    
-    driver = None
     try:
         print("Manejando petición en /preguntar...")
-        # Conexión a Neo4j
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD), max_connection_lifetime=60)
-        driver.verify_connectivity()
-        
-        # Conexión a AI
-        genai.configure(api_key=GOOGLE_API_KEY)
-        modelo_gemini = genai.GenerativeModel(generative_model_name)
         
         data = request.json
         if not data or 'pregunta' not in data:
             return jsonify({"error": "No se proporcionó una 'pregunta'"}), 400
         pregunta = data['pregunta']
     
-        # Ejecutar flujo RAG
-        plan = get_plan_de_busqueda(pregunta, driver, modelo_gemini)
-        contexto_items = buscar_en_grafo(driver, plan)
+        modelo_gemini = genai.GenerativeModel(generative_model_name)
+
+        # Ejecutar flujo RAG (Ahora con Supabase)
+        plan = get_plan_de_busqueda(pregunta, modelo_gemini)
+        contexto_items = buscar_en_supabase(plan)
         
-        if not contexto_items:
-            return jsonify({
-                "respuesta_principal": "Lo siento, no pude encontrar información sobre eso en mi base de conocimientos del manual.",
-                "puntos_clave": [], "fuente": ""
-            })
-        
+        # Generar respuesta
         respuesta_dict = generar_respuesta_final(pregunta, contexto_items, modelo_gemini)
         return jsonify(respuesta_dict)
     
@@ -211,141 +202,87 @@ def manejar_pregunta():
             "respuesta_principal": "Ocurrió un error interno mayor al procesar tu solicitud.",
             "puntos_clave": [], "fuente": ""
         }), 500
-    finally:
-        if driver:
-            driver.close()
-            print("Manejando petición en /preguntar: Conexión a Neo4j cerrada.")
 
 # ==============================================================================
 # === FLUJO 2: GENERADOR DE CÓDIGO BLENDER (bpy) ===
 # ==============================================================================
 
-# --- NUEVA FUNCIÓN "EXPERTA EN BPY" (Modo JSON y PURO) ---
+# PASO 2.1: GENERADOR PURO
 def generar_script_blender(prompt_usuario, modelo_gemini):
-    """
-    Toma un prompt de usuario y devuelve un JSON que contiene
-    un script de Python (bpy) válido.
-    Formato de salida: {"script": "..."}
-    """
-    print(f"Paso 2.1: Generador de Script PURO - Creando script para: '{prompt_usuario}'")
+    print(f"Paso 2.1: Generador de Script - Creando script para: '{prompt_usuario}'")
     
-    # Este es el prompt v19 con todas las reglas
     prompt_generador_bpy = f"""
-    Eres un asistente experto en el API de Python (bpy) de Blender (versión 3.4 en adelante).
-    La solicitud del usuario es: "{prompt_usuario}"
+    Eres un asistente experto en el API de Python (bpy) de Blender (versión 3.4+).
+    Solicitud: "{prompt_usuario}"
 
-    Tu tarea es generar un script de Python (bpy) que cumpla con la solicitud.
-    Sigue estas reglas OBLIGATORIAMENTE:
-    1.  Importa `bpy`.
-    2.  Limpia SIEMPRE la escena por defecto al inicio (cubo, luz, cámara).
-    3.  REGLA DE API MODERNA: Usa manipulación de datos directa (ej. `bpy.data.objects`, `obj.location`) siempre que sea posible. EVITA `bpy.ops` (ej. `bpy.ops.transform.translate`) a menos que no haya alternativa (como `bpy.ops.object.modifier_add`).
-    4.  REGLA DE COLECCIÓN (¡MUY IMPORTANTE!): Los objetos nuevos se enlazan con `bpy.context.collection.objects.link(obj)`, NO con el obsoleto `bpy.context.scene.objects.link(obj)`.
-    5.  REGLA DE SELECCIÓN: La selección se maneja con `obj.select_set(True)`. El antiguo `obj.select = True` está obsoleto y fallará.
-    6.  REGLA DE OBJETO ACTIVO: El objeto activo se establece con `bpy.context.view_layer.objects.active = obj`, NO con el obsoleto `bpy.context.scene.objects.active`.
-    7.  Crea los objetos, materiales, luces y cámara necesarios.
-    8.  Coloca la cámara en una posición razonable para ver los objetos creados.
-    9.  Configura el motor de render a 'CYCLES' y 'GPU' si es posible.
-    10. Configura la ruta de salida a '/tmp/render_result.png'.
-    11. NO uses el parámetro `use_confirm=True`. Está obsoleto.
-    12. REGLA DE SELECCIÓN (OPS): Si usas `bpy.ops.object.select_all()`, el parámetro es `action='SELECT'` o `action='DESELECT'`. El enum 'SELECTALL' es incorrecto y obsoleto.
-    13. REGLA DE MATERIAL EMISIVO: El input de emisión en el nodo Principled BSDF se llama 'Emission' (para el color) y 'Emission Strength' (para la intensidad). El input 'Emission Color' ya no existe y es incorrecto.
-
-    Responde SÓLO con un JSON que tenga esta estructura ÚNICA:
+    REGLAS OBLIGATORIAS:
+    1. Importa `bpy`.
+    2. Limpia la escena por defecto (cubo, luz, cámara).
+    3. Usa `bpy.context.collection.objects.link(obj)` (NO scene.objects.link).
+    4. Usa `obj.select_set(True)`.
+    5. Configura render a 'CYCLES' y dispositivo 'GPU'.
+    6. Configura salida a '/tmp/render_result.png'.
+    
+    Responde SÓLO JSON:
     {{
-      "script": "import bpy\n\n# (Tu código python aquí)\n\n"
+      "script": "import bpy\\n\\n# Código..."
     }}
-    
-    NO incluyas explicaciones.
-    NO incluyas advertencias.
-    NO incluyas nada fuera de la estructura JSON.
-    El campo "script" debe ser un string de Python válido, con saltos de línea \\n.
     """
-    
     try:
         config_json = {"response_mime_type": "application/json"}
-        
         response = modelo_gemini.generate_content(
             prompt_generador_bpy,
             generation_config=config_json
         )
-        
-        raw_text = response.text
-        clean_json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', raw_text)
-        respuesta_dict = json.loads(clean_json_text)
-        
-        print("Paso 2.1: Generador de Script PURO - Script generado exitosamente.")
-        return respuesta_dict
+        clean_json_text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', response.text)
+        return json.loads(clean_json_text)
         
     except Exception as e:
-        print(f"Error en Generador de Script (Paso 2.1): {e}")
-        error_message = re.sub(r'[\x00-\x1F\x7F]', '', str(e))
-        return {
-            "script": f"# Error al generar el script.\n# {error_message}"
-        }
+        print(f"Error en Generador de Script: {e}")
+        return {"script": f"# Error al generar el script: {e}"}
 
-# --- NUEVO ENDPOINT 2: GENERADOR DE SCRIPT ---
+# --- ENDPOINT 2: GENERADOR DE SCRIPT ---
 @app.route("/generar-script", methods=["POST"])
 def manejar_generacion_script():
-    """
-    Este endpoint:
-    1. Llama a Gemini para generar el script.
-    2. GUARDA el script en Neo4j como un Asset PENDIENTE.
-    3. Devuelve el script y el Asset ID al cliente.
-    """
-    driver = None
     try:
-        print("Manejando petición en /generar-script (Fase 2: Guardado de Asset)...")
-        # Conexión a AI
-        genai.configure(api_key=GOOGLE_API_KEY)
-        modelo_gemini = genai.GenerativeModel(generative_model_name)
+        print("Manejando petición en /generar-script...")
         
         data = request.json
         if not data or 'pregunta' not in data:
             return jsonify({"error": "No se proporcionó una 'pregunta'"}), 400
         
         prompt_usuario = data['pregunta']
+        modelo_gemini = genai.GenerativeModel(generative_model_name)
         
         # 1. Generar el script
         script_dict = generar_script_blender(prompt_usuario, modelo_gemini)
         script_code = script_dict.get("script", "# No se generó código.")
         
-        # Si la IA falló, devolvemos el error inmediatamente
-        if "# Error al generar el script" in script_code:
-             return jsonify(script_dict), 500
+        # 2. Guardar en Supabase (Tabla 'generated_assets')
+        # Nota: 'generated_assets' debe existir en Supabase
+        
+        nuevo_asset = {
+            "prompt": prompt_usuario,
+            "script": script_code,
+            "status": "PENDIENTE",
+            "type": "BLENDER_SCRIPT",
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        
+        print("Guardando asset en Supabase...")
+        res_db = supabase.table("generated_assets").insert(nuevo_asset).execute()
+        
+        # Recuperar ID del asset insertado
+        asset_id = None
+        if res_db.data and len(res_db.data) > 0:
+            asset_id = res_db.data[0]['id']
+            print(f"Asset guardado correctamente. ID: {asset_id}")
 
-        # 2. Conexión a Neo4j (Independiente del Flujo 1)
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD), max_connection_lifetime=60)
-        driver.verify_connectivity()
-        
-        # 3. Guardar el Asset PENDIENTE en Neo4j
-        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        
-        query = """
-        CREATE (a:Asset:GeneratedAsset {
-            prompt: $prompt,
-            script: $script,
-            status: 'PENDIENTE',
-            createdAt: $timestamp,
-            type: 'BLENDER_SCRIPT'
-        })
-        RETURN ID(a) AS asset_id
-        """
-        
-        with driver.session(database=NEO4J_DATABASE) as session:
-            result = session.run(query, 
-                prompt=prompt_usuario, 
-                script=script_code, 
-                timestamp=timestamp
-            )
-            asset_id = result.single()["asset_id"]
-            print(f"Asset PENDIENTE creado en Neo4j. ID: {asset_id}")
-
-        # 4. Devolver la respuesta al cliente con el ID de rastreo
         return jsonify({
             "script": script_code,
             "asset_id": asset_id,
             "status": "PENDIENTE",
-            "message": "Script generado y guardado. Esperando ejecución por el módulo Worker."
+            "message": "Script generado y guardado en la nube."
         })
 
     except Exception as e:
@@ -355,13 +292,8 @@ def manejar_generacion_script():
             "asset_id": None,
             "status": "FALLO"
         }), 500
-    finally:
-        if driver:
-            driver.close()
-            print("Manejando petición en /generar-script: Conexión a Neo4j cerrada.")
 
-
-# --- 5. Arrancar el servidor ---
+# --- ARRANQUE ---
 if __name__ == "__main__":
-    # app.run se ejecuta en un solo hilo, manejando ambos endpoints
+    # En local usamos debug=True. En Render, Gunicorn se encarga del run.
     app.run(debug=True, port=5000)
