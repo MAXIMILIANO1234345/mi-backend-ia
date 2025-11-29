@@ -32,7 +32,7 @@ except Exception as e:
 # Configuración de Modelos
 # Nota: Usamos 'text-embedding-004' (768 dimensiones) para coincidir con tu base de datos
 EMBEDDING_MODEL = "models/text-embedding-004"
-GENERATIVE_MODEL = "models/gemini-1.5-flash" 
+GENERATIVE_MODEL = "models/gemini-2.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
@@ -271,3 +271,4 @@ def endpoint_script():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
