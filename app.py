@@ -1,5 +1,6 @@
 import os
 import json
+import re  # IMPORTANTE: Para la limpieza avanzada de JSON
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -7,7 +8,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando API Proyecto 17 (Modo Debug) ---")
+print("--- Iniciando API Proyecto 17 (Modo Debug & Robust) ---")
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -22,37 +23,52 @@ genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # MODELOS
-# Usamos el modelo 004 que es el estándar actual. Asegúrate de insertar datos con este mismo.
+# Usa 'text-embedding-004' para vectores (768 dim)
+# Usa 'gemini-1.5-flash' para respuestas rápidas
 EMBEDDING_MODEL = "models/text-embedding-004"
 GENERATIVE_MODEL = "models/gemini-1.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
 
-# --- 2. FUNCIONES DE AYUDA ---
+# --- 2. FUNCIONES DE LIMPIEZA JSON (BLINDAJE) ---
 
-def get_text_embedding(text):
-    """Genera vector de 768 dimensiones optimizado para CONSULTAS."""
+def extraer_json_con_regex(texto):
+    """
+    Busca el primer bloque que parezca un objeto JSON { ... }
+    dentro del texto, ignorando la basura al inicio o final.
+    """
     try:
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type="RETRIEVAL_QUERY" # Optimizado para preguntar
-        )
-        return result['embedding']
-    except Exception as e:
-        print(f"❌ Error generando embedding: {e}")
-        return None
+        # Busca desde la primera { hasta la última }
+        match = re.search(r'(\{.*\})', texto, re.DOTALL)
+        if match:
+            return match.group(1)
+        return texto
+    except:
+        return texto
 
 def limpiar_respuesta_json(texto_bruto):
-    """Limpia el markdown de la respuesta de Gemini."""
+    """Limpia etiquetas Markdown comunes."""
     texto = texto_bruto.strip()
     if texto.startswith("```json"): texto = texto[7:]
     elif texto.startswith("```"): texto = texto[3:]
     if texto.endswith("```"): texto = texto[:-3]
     return texto.strip()
 
-# --- 3. LÓGICA RAG (Con Logs de Depuración) ---
+# --- 3. FUNCIONES DE IA (RAG) ---
+
+def get_text_embedding(text):
+    """Genera vector optimizado para BÚSQUEDA."""
+    try:
+        result = genai.embed_content(
+            model=EMBEDDING_MODEL,
+            content=text,
+            task_type="RETRIEVAL_QUERY" 
+        )
+        return result['embedding']
+    except Exception as e:
+        print(f"❌ Error vectorizando: {e}")
+        return None
 
 def buscar_contexto_rag(pregunta_usuario):
     # 1. Vectorizar
@@ -63,30 +79,30 @@ def buscar_contexto_rag(pregunta_usuario):
     nodos_encontrados = []
     
     try:
-        # 2. Búsqueda en Supabase
-        # ATENCIÓN: Bajamos el threshold a 0.25 para que encuentre SÍ o SÍ
-        print(f"🔍 Buscando: '{pregunta_usuario}'...")
+        # 2. RPC a Supabase
+        # Umbral 0.25 para asegurar que traiga datos aunque no sean exactos
+        print(f"🔍 Buscando en BD: '{pregunta_usuario}'")
         response = supabase.rpc('buscar_nodos', {
             'query_embedding': vector_busqueda,
-            'match_threshold': 0.25,  # <--- UMBRAL BAJO PARA ASEGURAR RESULTADOS
+            'match_threshold': 0.25,
             'match_count': 10
         }).execute()
         
         nodos_encontrados = response.data or []
 
-        # --- DEBUG LOGS (Mira esto en tu terminal) ---
-        print(f"📊 Resultados encontrados: {len(nodos_encontrados)}")
+        # --- DEBUG LOGS ---
+        print(f"📊 Nodos recuperados: {len(nodos_encontrados)}")
         for n in nodos_encontrados:
-            # Imprimimos qué encontró y qué tan seguro está (0 a 1)
-            print(f"   -> ID: {n.get('id')} | {n.get('nombre')} | Similitud: {n.get('similitud', 0):.4f}")
-        print("------------------------------------------------")
-        # ---------------------------------------------
+            similitud = n.get('similitud', 0) # Si falla la clave, usa 0
+            print(f"   -> [{n.get('id')}] {n.get('nombre')} (Similitud: {similitud:.4f})")
+        print("--------------------")
+        # ------------------
 
     except Exception as e:
-        print(f"❌ Error CRÍTICO en RPC buscar_nodos: {e}")
+        print(f"❌ Error SQL/RPC: {e}")
         return [], []
 
-    # 3. Traer Relaciones (Expandir contexto)
+    # 3. Traer Relaciones
     relaciones_contexto = []
     if nodos_encontrados:
         ids_nodos = [n['id'] for n in nodos_encontrados]
@@ -99,84 +115,108 @@ def buscar_contexto_rag(pregunta_usuario):
             
             if rel_response.data:
                 for r in rel_response.data:
-                    origen = r['nodo_origen']['nombre'] if r['nodo_origen'] else "Origen"
-                    destino = r['nodo_destino']['nombre'] if r['nodo_destino'] else "Destino"
-                    tipo = r['relacion']
-                    relaciones_contexto.append(f"{origen} --[{tipo}]--> {destino}")
+                    origen = r['nodo_origen']['nombre'] if r['nodo_origen'] else "X"
+                    destino = r['nodo_destino']['nombre'] if r['nodo_destino'] else "Y"
+                    relaciones_contexto.append(f"{origen} --[{r['relacion']}]--> {destino}")
         except Exception as e:
-            print(f"⚠️ Error recuperando relaciones: {e}")
+            print(f"⚠️ Error relaciones: {e}")
 
     return nodos_encontrados, relaciones_contexto
 
 def generar_respuesta(pregunta, nodos, relaciones):
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
 
-    # Preparar texto para el prompt
-    txt_nodos = "\n".join([f"- {n['nombre']}: {n['descripcion']}" for n in nodos])
+    # Formatear contexto para el prompt
+    txt_nodos = "\n".join([f"- {n.get('nombre')}: {n.get('descripcion')}" for n in nodos])
     txt_rels = "\n".join(relaciones)
     
-    # Si no hay nodos, avisamos en el prompt pero dejamos que Gemini intente responder si es algo obvio
-    aviso_vacio = ""
-    if not nodos:
-        aviso_vacio = "ADVERTENCIA: No se encontró información en la base de datos. Si respondes, aclara que es conocimiento general."
+    fuente_str = "Grafo" if nodos else "Conocimiento General"
 
     prompt = f"""
-    Eres un Asistente Experto en Blender 3D.
-    
-    PREGUNTA: "{pregunta}"
-    
-    --- INFORMACIÓN DE LA BASE DE DATOS (PRIORIDAD MÁXIMA) ---
+    Eres un experto en Blender. Responde a la pregunta del usuario.
+
+    CONTEXTO RECUPERADO (Base de Datos):
     {txt_nodos}
     
-    CONEXIONES:
+    RELACIONES:
     {txt_rels}
-    ----------------------------------------------------------
-    {aviso_vacio}
 
-    Instrucciones:
-    1. Si la información está arriba, ÚSALA. No la ignores.
-    2. Si la información arriba es escasa, compleméntala con tu conocimiento, pero prioriza lo que leíste arriba.
-    3. Si NO hay información arriba, responde: "Nota: No encontré información específica en tu base de datos (Grafo), pero..." y responde lo mejor que puedas.
-    
-    Responde SOLAMENTE en formato JSON:
+    PREGUNTA: "{pregunta}"
+
+    INSTRUCCIONES:
+    1. Si el contexto tiene la respuesta, ÚSALO.
+    2. Si no, responde con tu conocimiento general pero empieza diciendo "Nota: No encontré información en tu base de datos, pero...".
+    3. Responde ESTRICTAMENTE en JSON. No hables antes ni después del JSON.
+
+    FORMATO JSON:
     {{
         "respuesta_principal": "Texto de la respuesta...",
         "puntos_clave": [
-            {{ "titulo": "Concepto", "descripcion": "Detalle..." }}
+            {{ "titulo": "Concepto", "descripcion": "Detalle breve" }}
         ],
-        "fuente": "Grafo" (si usaste los datos) o "Conocimiento General"
+        "fuente": "{fuente_str}"
     }}
     """
 
     try:
+        # Configuración para forzar JSON
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(limpiar_respuesta_json(res.text))
+        texto_generado = res.text
+        
+        # --- ESTRATEGIA DE DEFENSA CONTRA ERRORES JSON ---
+        try:
+            # Intento 1: Limpieza básica
+            return json.loads(limpiar_respuesta_json(texto_generado))
+        except json.JSONDecodeError:
+            print("⚠️ JSON sucio detectado, aplicando Regex...")
+            # Intento 2: Extracción quirúrgica con Regex
+            json_str = extraer_json_con_regex(texto_generado)
+            return json.loads(json_str)
+
     except Exception as e:
+        print(f"❌ Error fatal generando respuesta: {e}")
+        # Retorno de emergencia para que el Frontend no explote
         return {
-            "respuesta_principal": "Error generando respuesta.",
+            "respuesta_principal": "Hubo un error técnico procesando la respuesta. Por favor intenta reformular la pregunta.",
             "puntos_clave": [],
             "fuente": "Error de Sistema"
         }
 
-# --- ENDPOINTS ---
+# --- 4. ENDPOINTS ---
+
+@app.route("/", methods=["GET"])
+def health():
+    return jsonify({"status": "online", "mode": "Robust GraphRAG"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
     
-    # 1. Ejecutar RAG
+    if not pregunta:
+        return jsonify({"respuesta_principal": "Por favor escribe una pregunta.", "puntos_clave": []})
+
+    # RAG
     nodos, relaciones = buscar_contexto_rag(pregunta)
     
-    # 2. Generar Respuesta
-    # Determinamos la fuente para enviarla al prompt o frontend
+    # Generación
     respuesta = generar_respuesta(pregunta, nodos, relaciones)
     
-    # Doble chequeo de la fuente
-    if not nodos and respuesta.get("fuente") == "Grafo":
-        respuesta["fuente"] = "Conocimiento General"
-
     return jsonify(respuesta)
+
+@app.route("/generar-script", methods=["POST"])
+def endpoint_script():
+    # Endpoint simplificado para scripts
+    data = request.json
+    pregunta = data.get('pregunta', '')
+    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+    
+    try:
+        prompt = f'Genera script Python Blender (bpy) para: "{pregunta}". JSON: {{ "script": "import bpy..." }}'
+        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        return jsonify(json.loads(limpiar_respuesta_json(res.text)))
+    except:
+        return jsonify({"script": "# Error generando script"})
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
