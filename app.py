@@ -30,7 +30,7 @@ except Exception as e:
 
 # Modelos (CORREGIDO: Usamos 1.5-flash que es estable y rápido)
 EMBEDDING_MODEL = "models/text-embedding-004"
-GENERATIVE_MODEL = "models/gemini-1.5-flash" 
+GENERATIVE_MODEL = "models/gemini-2.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
@@ -229,3 +229,4 @@ def endpoint_script():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
