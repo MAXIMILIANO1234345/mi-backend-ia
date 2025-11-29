@@ -24,7 +24,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # MODELOS OPTIMIZADOS
 # Nota: text-embedding-004 genera vectores de 768 dimensiones
 EMBEDDING_MODEL = "models/text-embedding-004"
-GENERATIVE_MODEL = "models/gemini-1.5-flash" 
+GENERATIVE_MODEL = "models/gemini-2.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
@@ -183,3 +183,4 @@ def endpoint_script():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
