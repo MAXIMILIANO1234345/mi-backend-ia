@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando API Proyecto 17 (GraphRAG Mejorado) ---")
+print("--- Iniciando API Proyecto 17 (Modo Debug) ---")
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -17,28 +17,27 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("⚠️ Faltan variables de entorno (.env)")
 
-# Configuración Gemini
+# Configuración de Clientes
 genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# MODELOS OPTIMIZADOS
-# Nota: text-embedding-004 genera vectores de 768 dimensiones
+# MODELOS
+# Usamos el modelo 004 que es el estándar actual. Asegúrate de insertar datos con este mismo.
 EMBEDDING_MODEL = "models/text-embedding-004"
-GENERATIVE_MODEL = "models/gemini-2.5-flash" 
+GENERATIVE_MODEL = "models/gemini-1.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
 
-# --- 2. FUNCIONES DE VECTORIZACIÓN ---
+# --- 2. FUNCIONES DE AYUDA ---
 
 def get_text_embedding(text):
-    """Genera vector de 768 dimensiones para búsqueda."""
+    """Genera vector de 768 dimensiones optimizado para CONSULTAS."""
     try:
-        # task_type="RETRIEVAL_QUERY" optimiza el vector para búsquedas
         result = genai.embed_content(
             model=EMBEDDING_MODEL,
             content=text,
-            task_type="RETRIEVAL_QUERY"
+            task_type="RETRIEVAL_QUERY" # Optimizado para preguntar
         )
         return result['embedding']
     except Exception as e:
@@ -46,20 +45,17 @@ def get_text_embedding(text):
         return None
 
 def limpiar_respuesta_json(texto_bruto):
-    """Limpia wrappers de Markdown para evitar errores de JSON."""
+    """Limpia el markdown de la respuesta de Gemini."""
     texto = texto_bruto.strip()
     if texto.startswith("```json"): texto = texto[7:]
     elif texto.startswith("```"): texto = texto[3:]
     if texto.endswith("```"): texto = texto[:-3]
     return texto.strip()
 
-# --- 3. LÓGICA GRAPHRAG (BÚSQUEDA REAL) ---
+# --- 3. LÓGICA RAG (Con Logs de Depuración) ---
 
 def buscar_contexto_rag(pregunta_usuario):
-    """
-    Realiza la búsqueda vectorial en Supabase y recupera relaciones.
-    """
-    # 1. Vectorizar pregunta
+    # 1. Vectorizar
     vector_busqueda = get_text_embedding(pregunta_usuario)
     if not vector_busqueda:
         return [], []
@@ -67,77 +63,88 @@ def buscar_contexto_rag(pregunta_usuario):
     nodos_encontrados = []
     
     try:
-        # 2. Llamada RPC a Supabase (Match Vectorial)
-        # Bajamos el threshold a 0.50 para encontrar más coincidencias
+        # 2. Búsqueda en Supabase
+        # ATENCIÓN: Bajamos el threshold a 0.25 para que encuentre SÍ o SÍ
+        print(f"🔍 Buscando: '{pregunta_usuario}'...")
         response = supabase.rpc('buscar_nodos', {
             'query_embedding': vector_busqueda,
-            'match_threshold': 0.50, 
-            'match_count': 6
+            'match_threshold': 0.25,  # <--- UMBRAL BAJO PARA ASEGURAR RESULTADOS
+            'match_count': 10
         }).execute()
         
         nodos_encontrados = response.data or []
-        print(f"🔍 Nodos encontrados: {len(nodos_encontrados)}")
+
+        # --- DEBUG LOGS (Mira esto en tu terminal) ---
+        print(f"📊 Resultados encontrados: {len(nodos_encontrados)}")
+        for n in nodos_encontrados:
+            # Imprimimos qué encontró y qué tan seguro está (0 a 1)
+            print(f"   -> ID: {n.get('id')} | {n.get('nombre')} | Similitud: {n.get('similitud', 0):.4f}")
+        print("------------------------------------------------")
+        # ---------------------------------------------
+
     except Exception as e:
-        print(f"❌ Error en RPC buscar_nodos: {e}")
+        print(f"❌ Error CRÍTICO en RPC buscar_nodos: {e}")
         return [], []
 
-    # 3. Expandir Grafo (Buscar relaciones de esos nodos)
+    # 3. Traer Relaciones (Expandir contexto)
     relaciones_contexto = []
     if nodos_encontrados:
         ids_nodos = [n['id'] for n in nodos_encontrados]
         try:
-            # Buscamos relaciones donde el origen o destino sean los nodos encontrados
             rel_response = supabase.table('relaciones')\
                 .select('relacion, origen_id, destino_id, nodo_origen:nodos!origen_id(nombre), nodo_destino:nodos!destino_id(nombre, descripcion)')\
                 .in_('origen_id', ids_nodos)\
-                .limit(10)\
+                .limit(15)\
                 .execute()
             
             if rel_response.data:
                 for r in rel_response.data:
-                    origen = r['nodo_origen']['nombre'] if r['nodo_origen'] else "Concepto"
-                    destino = r['nodo_destino']['nombre'] if r['nodo_destino'] else "Algo"
-                    desc = r['nodo_destino']['descripcion'] if r['nodo_destino'] else ""
+                    origen = r['nodo_origen']['nombre'] if r['nodo_origen'] else "Origen"
+                    destino = r['nodo_destino']['nombre'] if r['nodo_destino'] else "Destino"
                     tipo = r['relacion']
-                    relaciones_contexto.append(f"{origen} --[{tipo}]--> {destino} ({desc})")
-                    
+                    relaciones_contexto.append(f"{origen} --[{tipo}]--> {destino}")
         except Exception as e:
-            print(f"⚠️ Error expandiendo relaciones: {e}")
+            print(f"⚠️ Error recuperando relaciones: {e}")
 
     return nodos_encontrados, relaciones_contexto
 
 def generar_respuesta(pregunta, nodos, relaciones):
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
 
-    # Convertir contexto a texto
+    # Preparar texto para el prompt
     txt_nodos = "\n".join([f"- {n['nombre']}: {n['descripcion']}" for n in nodos])
     txt_rels = "\n".join(relaciones)
     
-    # Prompt de Sistema (GraphRAG estricto)
+    # Si no hay nodos, avisamos en el prompt pero dejamos que Gemini intente responder si es algo obvio
+    aviso_vacio = ""
+    if not nodos:
+        aviso_vacio = "ADVERTENCIA: No se encontró información en la base de datos. Si respondes, aclara que es conocimiento general."
+
     prompt = f"""
-    Actúa como un Asistente Experto en Blender 3D. Tu objetivo es responder usando la información recuperada de la base de datos (Contexto).
-
-    PREGUNTA DEL USUARIO: "{pregunta}"
-
-    --- CONTEXTO RECUPERADO (Base de Conocimiento) ---
-    CONCEPTOS:
+    Eres un Asistente Experto en Blender 3D.
+    
+    PREGUNTA: "{pregunta}"
+    
+    --- INFORMACIÓN DE LA BASE DE DATOS (PRIORIDAD MÁXIMA) ---
     {txt_nodos}
-
-    RELACIONES:
+    
+    CONEXIONES:
     {txt_rels}
-    --------------------------------------------------
+    ----------------------------------------------------------
+    {aviso_vacio}
 
-    INSTRUCCIONES:
-    1. Analiza el CONTEXTO proporcionado arriba.
-    2. Si el contexto contiene la respuesta, úsalo como fuente principal y cita las relaciones.
-    3. Si el contexto es vacío o insuficiente, responde usando tu conocimiento general de Blender, pero inicia la respuesta con: "Nota: No encontré información específica en tu base de datos, pero aquí tienes una respuesta general:".
-    4. Formatea la salida estrictamente como JSON.
-
-    SALIDA JSON ESPERADA:
+    Instrucciones:
+    1. Si la información está arriba, ÚSALA. No la ignores.
+    2. Si la información arriba es escasa, compleméntala con tu conocimiento, pero prioriza lo que leíste arriba.
+    3. Si NO hay información arriba, responde: "Nota: No encontré información específica en tu base de datos (Grafo), pero..." y responde lo mejor que puedas.
+    
+    Responde SOLAMENTE en formato JSON:
     {{
-        "respuesta_principal": "Explicación detallada...",
-        "puntos_clave": ["Punto 1", "Punto 2"],
-        "fuente": "Grafo" o "Conocimiento General"
+        "respuesta_principal": "Texto de la respuesta...",
+        "puntos_clave": [
+            {{ "titulo": "Concepto", "descripcion": "Detalle..." }}
+        ],
+        "fuente": "Grafo" (si usaste los datos) o "Conocimiento General"
     }}
     """
 
@@ -145,11 +152,10 @@ def generar_respuesta(pregunta, nodos, relaciones):
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(limpiar_respuesta_json(res.text))
     except Exception as e:
-        print(f"Error generando: {e}")
         return {
-            "respuesta_principal": "Error procesando la respuesta.",
+            "respuesta_principal": "Error generando respuesta.",
             "puntos_clave": [],
-            "fuente": "Error"
+            "fuente": "Error de Sistema"
         }
 
 # --- ENDPOINTS ---
@@ -159,28 +165,18 @@ def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
     
-    # 1. Búsqueda RAG
+    # 1. Ejecutar RAG
     nodos, relaciones = buscar_contexto_rag(pregunta)
     
-    # 2. Generación
+    # 2. Generar Respuesta
+    # Determinamos la fuente para enviarla al prompt o frontend
     respuesta = generar_respuesta(pregunta, nodos, relaciones)
     
-    return jsonify(respuesta)
+    # Doble chequeo de la fuente
+    if not nodos and respuesta.get("fuente") == "Grafo":
+        respuesta["fuente"] = "Conocimiento General"
 
-@app.route("/generar-script", methods=["POST"])
-def endpoint_script():
-    data = request.json
-    pregunta = data.get('pregunta', '')
-    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
-    
-    prompt = f'Crea un script de Python para Blender (bpy) que haga: "{pregunta}". Devuelve JSON {{ "script": "código..." }}'
-    
-    try:
-        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return jsonify(json.loads(limpiar_respuesta_json(res.text)))
-    except:
-        return jsonify({"script": "# Error generando script"})
+    return jsonify(respuesta)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
