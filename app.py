@@ -9,15 +9,15 @@ import google.generativeai as genai
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando API Proyecto 17 (Modo Relacional) ---")
+print("--- Iniciando API Proyecto 17 (Modo RAG con Metadatos) ---")
 load_dotenv()
 
-# Variables de Entorno (Render Dashboard)
+# Variables de Entorno (Render Dashboard o .env local)
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
-# Validación
+# Validación de seguridad
 if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     print("⚠️ CRÍTICO: Faltan variables de entorno.")
 
@@ -29,9 +29,10 @@ try:
 except Exception as e:
     print(f"❌ Error fatal en inicialización: {e}")
 
-# Modelos
+# Configuración de Modelos
+# Nota: Usamos 'text-embedding-004' (768 dimensiones) para coincidir con tu base de datos
 EMBEDDING_MODEL = "models/text-embedding-004"
-GENERATIVE_MODEL = "models/gemini-2.5-flash"
+GENERATIVE_MODEL = "models/gemini-1.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
@@ -39,7 +40,7 @@ CORS(app)
 # --- 2. FUNCIONES AUXILIARES ---
 
 def get_text_embedding(text):
-    """Genera vector de 768 dimensiones."""
+    """Genera vector de 768 dimensiones usando Gemini."""
     try:
         result = genai.embed_content(
             model=EMBEDDING_MODEL,
@@ -52,111 +53,152 @@ def get_text_embedding(text):
         return None
 
 # ==============================================================================
-# === FLUJO 1: ASISTENTE DEL MANUAL (RAG RELACIONAL) ===
+# === FLUJO 1: ASISTENTE DEL MANUAL (RAG CON FILTRADO DE METADATOS) ===
 # ==============================================================================
 
-def get_plan_de_busqueda(pregunta_usuario, modelo):
+def analizar_intencion_usuario(pregunta_usuario, modelo):
     """
-    Paso 1.1: Deduce qué buscar.
+    Paso 1.1: CLASIFICADOR + PLANIFICADOR
+    Analiza la pregunta para generar:
+    1. Frases de búsqueda (Embeddings).
+    2. Un FILTRO de metadatos (para buscar solo en el capítulo correcto).
     """
+    # Estos capítulos deben coincidir con los que pusimos en el Frontmatter de los MD
+    capitulos_validos = [
+        "Introducción", "Historia", "Instalación", 
+        "Interfaz de Usuario", "Gestión de Archivos", "Menús Principales"
+    ]
+    
     prompt = f"""
-    Eres un bibliotecario experto en el Manual de Blender (Proyecto 17).
+    Eres el bibliotecario del Manual de Blender.
     Pregunta: "{pregunta_usuario}"
     
-    Genera 2 frases de búsqueda optimizadas para encontrar la respuesta en la base de datos.
-    Responde SOLO JSON: {{"consultas": ["frase 1", "frase 2"]}}
+    1. Identifica si la pregunta pertenece a uno de estos capítulos exactos: {capitulos_validos}.
+    2. Si no estás seguro o es general, deja el filtro vacío.
+    3. Genera 2 frases de búsqueda optimizadas para encontrar la respuesta técnica.
+    
+    Responde SOLO JSON con este formato: 
+    {{
+        "consultas": ["frase 1", "frase 2"],
+        "filtro": {{ "capitulo": "Nombre Exacto" }} 
+    }}
+    Ejemplo si es general: "filtro": {{}}
     """
     try:
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(res.text).get('consultas', [pregunta_usuario])
-    except:
-        return [pregunta_usuario]
+        datos = json.loads(res.text)
+        return datos.get('consultas', [pregunta_usuario]), datos.get('filtro', {})
+    except Exception as e:
+        print(f"Error en clasificación: {e}")
+        return [pregunta_usuario], {}
 
-def buscar_en_supabase_relacional(consultas):
+def buscar_con_filtro(consultas, filtro_metadata):
     """
-    Paso 1.2: Búsqueda Relacional.
-    Llama a la función RPC 'buscar_secciones_manual' que hace JOIN entre
-    Secciones, Capítulos y Partes.
+    Paso 1.2: Búsqueda Vectorial Inteligente
+    Usa la función RPC 'match_secciones' que creamos en SQL.
+    Aplica el filtro JSONB para descartar capítulos irrelevantes antes de buscar.
     """
     resultados_unicos = {}
     
+    print(f"🔎 Buscando con filtro activo: {filtro_metadata}")
+
     for consulta in consultas:
         vector = get_text_embedding(consulta)
         if not vector: continue
         
         try:
-            # Llamada a la función SQL personalizada que une las tablas
-            response = supabase.rpc('buscar_secciones_manual', {
+            # Llamada a la función RPC que creamos en Supabase
+            # Esta función usa el índice vectorial Y aplica el filtro JSONB
+            response = supabase.rpc('match_secciones', {
                 'query_embedding': vector,
-                'match_threshold': 0.45,
-                'match_count': 3
+                'match_threshold': 0.50, # Umbral (0.0 a 1.0)
+                'match_count': 4,        # Número de chunks a recuperar
+                'filter': filtro_metadata # ¡Aquí ocurre el filtrado por capítulo!
             }).execute()
             
             if response.data:
                 for item in response.data:
-                    # Usamos ID de la sección para evitar duplicados
+                    # Usamos ID para evitar duplicados si varias consultas traen lo mismo
                     resultados_unicos[item['id']] = item
         except Exception as e:
-            print(f"Error consultando Supabase: {e}")
+            print(f"❌ Error consultando Supabase: {e}")
 
     return list(resultados_unicos.values())
 
 def generar_respuesta_rag(pregunta, contexto_items, modelo):
     """
-    Paso 1.3: Genera respuesta citando la jerarquía (Parte > Capítulo).
+    Paso 1.3: Generación de Respuesta
+    Lee los metadatos JSONB recuperados para dar contexto y cita fuentes.
     """
+    if not contexto_items:
+        return {
+            "respuesta_principal": "Lo siento, no encontré información específica en el manual sobre ese tema. Intenta reformular la pregunta.",
+            "puntos_clave": [],
+            "fuente": "Sin resultados"
+        }
+
     contexto_str = ""
-    fuentes = set()
+    fuentes_detectadas = set()
     
     for item in contexto_items:
-        # Extraemos datos directos de la respuesta RPC (ya vienen del JOIN)
         contenido = item.get('contenido', '')
-        # Ajusta estos nombres según lo que devuelva tu función SQL
-        capitulo = item.get('capitulo_titulo', 'Capítulo General') 
-        parte = item.get('parte_titulo', 'Sección Base')
+        # Extraemos datos de la columna JSONB 'metadata'
+        meta = item.get('metadata', {})
         
-        referencia = f"{parte} > {capitulo}"
-        fuentes.add(capitulo)
+        capitulo = meta.get('capitulo', 'General')
+        tema = meta.get('tema', 'Varios')
+        prioridad = meta.get('prioridad', 'Normal')
+        url = meta.get('url_fuente', '')
         
-        contexto_str += f"--- DE: {referencia} ---\n{contenido}\n\n"
+        # Construimos el bloque de contexto para la IA
+        referencia = f"[{capitulo} > {tema}]"
+        fuentes_detectadas.add(capitulo)
+        
+        contexto_str += f"--- FUENTE: {referencia} ---\n{contenido}\n\n"
     
-    fuente_final = ", ".join(fuentes) if fuentes else "Conocimiento General Blender"
+    lista_fuentes = ", ".join(list(fuentes_detectadas))
 
     prompt = f"""
-    Eres el Asistente Docente del Proyecto 17.
-    Usa EXCLUSIVAMENTE el contexto para responder.
+    Actúa como un experto docente en Blender 3D.
+    Responde a la pregunta usando SOLO el siguiente contexto extraído del manual oficial.
     
-    CONTEXTO DEL MANUAL:
+    CONTEXTO RECUPERADO:
     {contexto_str}
     
-    PREGUNTA DOCENTE: {pregunta}
+    PREGUNTA DEL USUARIO: "{pregunta}"
     
-    Responde en JSON:
+    Instrucciones:
+    1. Si el contexto tiene etiquetas de 'Historia', advierte que la info puede ser antigua.
+    2. Si el contexto es sobre 'Instalación', menciona si es para Windows, Linux o Mac.
+    3. Si hay enlaces útiles en el contexto, úsalos.
+    4. Sé claro, conciso y técnico.
+    
+    Salida JSON:
     {{
-        "respuesta_principal": "Explicación clara...",
-        "puntos_clave": [{{"titulo": "...", "descripcion": "..."}}],
-        "fuente": "Basado en: {fuente_final}"
+        "respuesta_principal": "Texto de la respuesta...",
+        "puntos_clave": ["Paso 1...", "Paso 2..."],
+        "fuente": "Manual: {lista_fuentes}"
     }}
     """
     try:
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(res.text)
     except Exception as e:
-        return {"respuesta_principal": "Error procesando respuesta.", "puntos_clave": [], "fuente": ""}
+        print(f"Error generando respuesta final: {e}")
+        return {"respuesta_principal": "Error al procesar la respuesta con la IA.", "puntos_clave": [], "fuente": "Error del Sistema"}
 
 # ==============================================================================
-# === FLUJO 2: GENERADOR DE SCRIPTS (ASSETS) ===
+# === FLUJO 2: GENERADOR DE SCRIPTS (ASSETS) - (Sin cambios) ===
 # ==============================================================================
 
 def generar_script_blender(prompt_usuario, modelo):
-    """Genera código bpy."""
+    """Genera código bpy para Blender."""
     prompt_bpy = f"""
     Genera script Python (bpy) para Blender 3.6+ para: "{prompt_usuario}"
     REGLAS:
     1. import bpy
     2. Borrar objetos default.
-    3. Usar `bpy.context.collection.objects.link`.
-    4. Render Engine: CYCLES, Device: GPU.
+    3. Render Engine: CYCLES, Device: GPU.
     
     Salida JSON: {{ "script": "import bpy..." }}
     """
@@ -166,11 +208,11 @@ def generar_script_blender(prompt_usuario, modelo):
     except:
         return {"script": "# Error generando script"}
 
-# --- ENDPOINTS ---
+# --- ENDPOINTS DE LA API ---
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return jsonify({"status": "online", "mode": "Relacional Supabase"}), 200
+    return jsonify({"status": "online", "mode": "RAG con Metadatos (Filtrado)"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
@@ -180,11 +222,13 @@ def endpoint_preguntar():
     
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
     
-    # 1. Planificar y Buscar (Relacional)
-    consultas = get_plan_de_busqueda(pregunta, modelo)
-    contexto = buscar_en_supabase_relacional(consultas)
+    # 1. Analizar Intención (Obtener querys + filtro de capítulo)
+    consultas, filtro = analizar_intencion_usuario(pregunta, modelo)
     
-    # 2. Responder
+    # 2. Buscar en Supabase (Usando el filtro inteligente)
+    contexto = buscar_con_filtro(consultas, filtro)
+    
+    # 3. Generar Respuesta Final
     respuesta = generar_respuesta_rag(pregunta, contexto, modelo)
     
     return jsonify(respuesta)
@@ -201,7 +245,7 @@ def endpoint_script():
     resultado = generar_script_blender(prompt_usuario, modelo)
     script_code = resultado.get("script", "# Error")
     
-    # 2. Guardar en Supabase
+    # 2. Guardar en Supabase (Registro de assets generados)
     asset_id = None
     try:
         nuevo_asset = {
@@ -211,17 +255,18 @@ def endpoint_script():
             "type": "BLENDER_SCRIPT",
             "created_at": datetime.datetime.now().isoformat()
         }
+        # Asegúrate de tener la tabla 'generated_assets' si usas esta función
         res = supabase.table("generated_assets").insert(nuevo_asset).execute()
         if res.data:
             asset_id = res.data[0]['id']
     except Exception as e:
-        print(f"Error guardando asset: {e}")
+        print(f"Nota: No se pudo guardar en 'generated_assets': {e}")
 
     return jsonify({
         "script": script_code,
         "asset_id": asset_id,
         "status": "PENDIENTE",
-        "info": "Script generado y guardado."
+        "info": "Script generado correctamente."
     })
 
 if __name__ == "__main__":
