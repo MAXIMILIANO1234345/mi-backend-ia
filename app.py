@@ -1,6 +1,6 @@
 import os
 import json
-import re  # IMPORTANTE: Para la limpieza avanzada de JSON
+import re
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando API Proyecto 17 (Modo Debug & Robust) ---")
+print("--- Iniciando CEREBRO ORQUESTADOR (Modo Estrella) ---")
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -22,202 +22,251 @@ if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# MODELOS
-# Usa 'text-embedding-004' para vectores (768 dim)
-# Usa 'gemini-1.5-flash' para respuestas rápidas
+# CONSTANTES DEL ORQUESTADOR
+ORQUESTADOR_ID = 1 # Asumimos que somos el "Alpha" (ID 1)
 EMBEDDING_MODEL = "models/text-embedding-004"
 GENERATIVE_MODEL = "models/gemini-2.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
 
-# --- 2. FUNCIONES DE LIMPIEZA JSON (BLINDAJE) ---
+# --- 2. CACHE DE PILARES (Memoria de Trabajo) ---
+# Al iniciar, cargamos el mapa del círculo para no consultar SQL a cada rato
+CATALOGO_PILARES = {} 
 
-def extraer_json_con_regex(texto):
-    """
-    Busca el primer bloque que parezca un objeto JSON { ... }
-    dentro del texto, ignorando la basura al inicio o final.
-    """
+def cargar_catalogo():
+    """Descarga el mapa mental del Orquestador desde Supabase."""
+    global CATALOGO_PILARES
     try:
-        # Busca desde la primera { hasta la última }
-        match = re.search(r'(\{.*\})', texto, re.DOTALL)
-        if match:
-            return match.group(1)
-        return texto
-    except:
-        return texto
+        # Traemos solo los pilares de ESTE orquestador
+        response = supabase.table('catalogo_pilares')\
+            .select('nombre_clave, nombre_tabla, descripcion')\
+            .eq('orquestador_id', ORQUESTADOR_ID)\
+            .execute()
+        
+        if response.data:
+            CATALOGO_PILARES = {item['nombre_clave']: item for item in response.data}
+            print(f"✅ Catálogo cargado: {len(CATALOGO_PILARES)} pilares disponibles.")
+        else:
+            print("⚠️ ADVERTENCIA: El catálogo está vacío. Ejecuta el SQL de setup.")
+    except Exception as e:
+        print(f"❌ Error cargando catálogo: {e}")
 
-def limpiar_respuesta_json(texto_bruto):
-    """Limpia etiquetas Markdown comunes."""
-    texto = texto_bruto.strip()
-    if texto.startswith("```json"): texto = texto[7:]
-    elif texto.startswith("```"): texto = texto[3:]
-    if texto.endswith("```"): texto = texto[:-3]
+# Cargar al inicio
+cargar_catalogo()
+
+# --- 3. UTILIDADES ---
+
+def limpiar_json(texto):
+    """Limpia respuestas del LLM para obtener JSON puro."""
+    texto = texto.strip()
+    # Eliminar bloques de código markdown
+    texto = re.sub(r'^```json\s*', '', texto)
+    texto = re.sub(r'^```\s*', '', texto)
+    texto = re.sub(r'\s*```$', '', texto)
     return texto.strip()
 
-# --- 3. FUNCIONES DE IA (RAG) ---
-
-def get_text_embedding(text):
-    """Genera vector optimizado para BÚSQUEDA."""
+def get_embedding(text):
+    """Vectorización estándar."""
     try:
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type="RETRIEVAL_QUERY" 
-        )
-        return result['embedding']
+        res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="RETRIEVAL_QUERY")
+        return res['embedding']
     except Exception as e:
         print(f"❌ Error vectorizando: {e}")
         return None
 
-def buscar_contexto_rag(pregunta_usuario):
-    # 1. Vectorizar
-    vector_busqueda = get_text_embedding(pregunta_usuario)
-    if not vector_busqueda:
-        return [], []
+# --- 4. LÓGICA DEL ORQUESTADOR (EL CEREBRO) ---
 
-    nodos_encontrados = []
+def planificar_busqueda(pregunta):
+    """
+    Paso 1: El Orquestador decide DÓNDE buscar.
+    No buscamos en todas las tablas, solo en las relevantes.
+    """
+    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+    
+    # Crear lista legible para el prompt
+    lista_pilares = "\n".join([f"- {k}: {v['descripcion']}" for k, v in CATALOGO_PILARES.items()])
+    
+    prompt = f"""
+    Eres el Orquestador de una Base de Datos de Conocimiento de Blender.
+    
+    PREGUNTA DEL USUARIO: "{pregunta}"
+    
+    TU MEMORIA ESTÁ DIVIDIDA EN ESTAS BÓVEDAS (TABLAS):
+    {lista_pilares}
+    
+    TAREA:
+    Identifica en qué bóveda(s) (1 o 2 máximo) es más probable encontrar la respuesta.
+    Si la pregunta es muy general, elige 'logica_ia' o 'api'.
+    
+    RESPONDE SOLO JSON:
+    {{ "pilares_seleccionados": ["nombre_clave_1", "nombre_clave_2"] }}
+    """
     
     try:
-        # 2. RPC a Supabase
-        # Umbral 0.25 para asegurar que traiga datos aunque no sean exactos
-        print(f"🔍 Buscando en BD: '{pregunta_usuario}'")
-        response = supabase.rpc('buscar_nodos', {
-            'query_embedding': vector_busqueda,
-            'match_threshold': 0.25,
-            'match_count': 10
-        }).execute()
+        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        data = json.loads(limpiar_json(res.text))
+        return data.get("pilares_seleccionados", [])
+    except:
+        return ["api"] # Fallback seguro
+
+def consultar_memoria(pilares_objetivo, vector_pregunta):
+    """
+    Paso 2: Ejecuta 'cerebro_recordar' en las tablas seleccionadas.
+    """
+    hallazgos = []
+    
+    for clave in pilares_objetivo:
+        if clave not in CATALOGO_PILARES: continue
         
-        nodos_encontrados = response.data or []
-
-        # --- DEBUG LOGS ---
-        print(f"📊 Nodos recuperados: {len(nodos_encontrados)}")
-        for n in nodos_encontrados:
-            similitud = n.get('similitud', 0) # Si falla la clave, usa 0
-            print(f"   -> [{n.get('id')}] {n.get('nombre')} (Similitud: {similitud:.4f})")
-        print("--------------------")
-        # ------------------
-
-    except Exception as e:
-        print(f"❌ Error SQL/RPC: {e}")
-        return [], []
-
-    # 3. Traer Relaciones
-    relaciones_contexto = []
-    if nodos_encontrados:
-        ids_nodos = [n['id'] for n in nodos_encontrados]
+        tabla_real = CATALOGO_PILARES[clave]['nombre_tabla']
+        print(f"🧠 Consultando memoria: {tabla_real}...")
+        
         try:
-            rel_response = supabase.table('relaciones')\
-                .select('relacion, origen_id, destino_id, nodo_origen:nodos!origen_id(nombre), nodo_destino:nodos!destino_id(nombre, descripcion)')\
-                .in_('origen_id', ids_nodos)\
-                .limit(15)\
-                .execute()
+            # Llamada a la RPC centralizada del SQL
+            response = supabase.rpc('cerebro_recordar', {
+                'p_orquestador_id': ORQUESTADOR_ID,
+                'p_tabla_destino': tabla_real,
+                'p_vector': vector_pregunta,
+                'p_umbral': 0.4, # Umbral de similitud
+                'p_limite': 3
+            }).execute()
             
-            if rel_response.data:
-                for r in rel_response.data:
-                    origen = r['nodo_origen']['nombre'] if r['nodo_origen'] else "X"
-                    destino = r['nodo_destino']['nombre'] if r['nodo_destino'] else "Y"
-                    relaciones_contexto.append(f"{origen} --[{r['relacion']}]--> {destino}")
+            if response.data:
+                for item in response.data:
+                    hallazgos.append(f"[{clave.upper()}] Concepto: {item['concepto']}\nDetalle: {item['detalle']}\nSimilitud: {item['similitud']:.2f}")
+                    
         except Exception as e:
-            print(f"⚠️ Error relaciones: {e}")
+            print(f"⚠️ Error leyendo {tabla_real}: {e}")
+            
+    return hallazgos
 
-    return nodos_encontrados, relaciones_contexto
-
-def generar_respuesta(pregunta, nodos, relaciones):
+def aprender_y_guardar(pregunta):
+    """
+    Paso 3 (CRÍTICO): Si no sabemos la respuesta, INVESTIGAMOS y APRENDEMOS.
+    """
+    print("🌐 Modo Aprendizaje Activado: Buscando información externa...")
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
-
-    # Formatear contexto para el prompt
-    txt_nodos = "\n".join([f"- {n.get('nombre')}: {n.get('descripcion')}" for n in nodos])
-    txt_rels = "\n".join(relaciones)
     
-    fuente_str = "Grafo" if nodos else "Conocimiento General"
-
-    prompt = f"""
-    Eres un experto en Blender. Responde a la pregunta del usuario.
-
-    CONTEXTO RECUPERADO (Base de Datos):
-    {txt_nodos}
+    # 1. INVESTIGAR (Usamos Gemini con herramienta de búsqueda si disponible, o simulación)
+    # Prompt diseñado para extraer información estructurada de su conocimiento base + búsqueda
+    prompt_investigacion = f"""
+    El usuario pregunta: "{pregunta}".
+    No tengo esta información en mi base de datos local.
     
-    RELACIONES:
-    {txt_rels}
-
-    PREGUNTA: "{pregunta}"
-
-    INSTRUCCIONES:
-    1. Si el contexto tiene la respuesta, ÚSALO.
-    2. Si no, responde con tu conocimiento general pero empieza diciendo "Nota: No encontré información en tu base de datos, pero...".
-    3. Responde ESTRICTAMENTE en JSON. No hables antes ni después del JSON.
-
-    FORMATO JSON:
+    Por favor, responde a la pregunta con tu mejor conocimiento experto en Blender y Python.
+    Sé técnico, preciso y da ejemplos de código si aplica.
+    """
+    
+    res_investigacion = modelo.generate_content(prompt_investigacion)
+    info_nueva = res_investigacion.text
+    
+    # 2. CLASIFICAR Y ESTRUCTURAR (ETL)
+    # Ahora que tenemos la info, el Orquestador debe decidir dónde guardarla.
+    lista_pilares = "\n".join([f"- {k}: {v['descripcion']}" for k, v in CATALOGO_PILARES.items()])
+    
+    prompt_clasificacion = f"""
+    ANALIZA ESTA INFORMACIÓN NUEVA:
+    "{info_nueva}"
+    
+    TU CATÁLOGO DE MEMORIA:
+    {lista_pilares}
+    
+    TAREA:
+    1. Resume el concepto clave.
+    2. Extrae el detalle técnico/código.
+    3. Decide en QUÉ tabla (nombre_clave) debe guardarse.
+    
+    JSON OBLIGATORIO:
     {{
-        "respuesta_principal": "Texto de la respuesta...",
-        "puntos_clave": [
-            {{ "titulo": "Concepto", "descripcion": "Detalle breve" }}
-        ],
-        "fuente": "{fuente_str}"
+        "tabla_destino": "nombre_clave_del_catalogo",
+        "concepto": "Título corto",
+        "detalle_tecnico": "Explicación técnica resumida",
+        "codigo_ejemplo": "snippet de codigo o null"
     }}
     """
-
+    
     try:
-        # Configuración para forzar JSON
-        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        texto_generado = res.text
+        res_clasif = modelo.generate_content(prompt_clasificacion, generation_config={"response_mime_type": "application/json"})
+        datos_aprendizaje = json.loads(limpiar_json(res_clasif.text))
         
-        # --- ESTRATEGIA DE DEFENSA CONTRA ERRORES JSON ---
-        try:
-            # Intento 1: Limpieza básica
-            return json.loads(limpiar_respuesta_json(texto_generado))
-        except json.JSONDecodeError:
-            print("⚠️ JSON sucio detectado, aplicando Regex...")
-            # Intento 2: Extracción quirúrgica con Regex
-            json_str = extraer_json_con_regex(texto_generado)
-            return json.loads(json_str)
-
+        clave_destino = datos_aprendizaje.get("tabla_destino")
+        
+        if clave_destino in CATALOGO_PILARES:
+            tabla_real = CATALOGO_PILARES[clave_destino]['nombre_tabla']
+            
+            # 3. GUARDAR (RPC cerebro_aprender)
+            vec_nuevo = get_embedding(f"{datos_aprendizaje['concepto']} {datos_aprendizaje['detalle_tecnico']}")
+            
+            supabase.rpc('cerebro_aprender', {
+                'p_orquestador_id': ORQUESTADOR_ID,
+                'p_tabla_destino': tabla_real,
+                'p_concepto': datos_aprendizaje['concepto'],
+                'p_detalle': datos_aprendizaje['detalle_tecnico'],
+                'p_codigo': datos_aprendizaje.get('codigo_ejemplo', ''),
+                'p_vector': vec_nuevo
+            }).execute()
+            
+            print(f"💾 CONOCIMIENTO GUARDADO en {tabla_real}: {datos_aprendizaje['concepto']}")
+            return info_nueva + "\n\n(Nota: Acabo de aprender esto y lo he guardado en mi memoria de " + clave_destino + ")."
+            
+        else:
+            return info_nueva + "\n(Nota: No supe dónde clasificar esto, pero aquí tienes la respuesta)."
+            
     except Exception as e:
-        print(f"❌ Error fatal generando respuesta: {e}")
-        # Retorno de emergencia para que el Frontend no explote
-        return {
-            "respuesta_principal": "Hubo un error técnico procesando la respuesta. Por favor intenta reformular la pregunta.",
-            "puntos_clave": [],
-            "fuente": "Error de Sistema"
-        }
+        print(f"❌ Error en aprendizaje: {e}")
+        return info_nueva # Devolvemos la info aunque falle el guardado
 
-# --- 4. ENDPOINTS ---
+# --- 5. ENDPOINTS ---
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "online", "mode": "Robust GraphRAG"}), 200
+    return jsonify({"status": "online", "mode": "Orquestador Estrella Centralizada"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
     
-    if not pregunta:
-        return jsonify({"respuesta_principal": "Por favor escribe una pregunta.", "puntos_clave": []})
-
-    # RAG
-    nodos, relaciones = buscar_contexto_rag(pregunta)
+    if not pregunta: return jsonify({"error": "Pregunta vacía"}), 400
     
-    # Generación
-    respuesta = generar_respuesta(pregunta, nodos, relaciones)
+    print(f"\n📨 Nueva solicitud: '{pregunta}'")
     
-    return jsonify(respuesta)
-
-@app.route("/generar-script", methods=["POST"])
-def endpoint_script():
-    # Endpoint simplificado para scripts
-    data = request.json
-    pregunta = data.get('pregunta', '')
-    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+    # 1. PLANIFICACIÓN
+    pilares_target = planificar_busqueda(pregunta)
+    print(f"🎯 Estrategia: Buscar en {pilares_target}")
     
-    try:
-        prompt = f'Genera script Python Blender (bpy) para: "{pregunta}". JSON: {{ "script": "import bpy..." }}'
+    # 2. EJECUCIÓN (Búsqueda interna)
+    vector = get_embedding(pregunta)
+    contexto = consultar_memoria(pilares_target, vector)
+    
+    # 3. EVALUACIÓN
+    if contexto:
+        print(f"✅ Encontrado en memoria interna ({len(contexto)} registros).")
+        # Generar respuesta con RAG
+        modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+        prompt = f"""
+        CONTEXTO DE TU MEMORIA (BASED ON SQL):
+        {chr(10).join(contexto)}
+        
+        PREGUNTA: {pregunta}
+        
+        Responde usando el contexto. Si hay código, úsalo. Formato JSON.
+        {{ "respuesta": "...", "codigo": "..." }}
+        """
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return jsonify(json.loads(limpiar_respuesta_json(res.text)))
-    except:
-        return jsonify({"script": "# Error generando script"})
+        return jsonify(json.loads(limpiar_json(res.text)))
+        
+    else:
+        print("Empty - 🤷 No sé la respuesta. Iniciando protocolo de APRENDIZAJE...")
+        # 4. APRENDIZAJE (Si falla la memoria interna)
+        respuesta_aprendida = aprender_y_guardar(pregunta)
+        
+        return jsonify({
+            "respuesta": respuesta_aprendida,
+            "fuente": "Investigación en Tiempo Real (Nuevo Conocimiento)",
+            "estado": "Aprendido y Guardado"
+        })
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
