@@ -6,7 +6,7 @@ import threading
 import requests
 import urllib.request
 import urllib3
-import ssl # Necesario para el ajuste SSL
+import ssl 
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.poolmanager import PoolManager
@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- ORQUESTADOR HÍBRIDO INMORTAL (V19: Fix SSL & Arguments) ---")
+print("--- ORQUESTADOR HÍBRIDO INMORTAL (V20: Timeout Safety) ---")
 load_dotenv()
 
 # Silenciar advertencias de SSL
@@ -49,17 +49,12 @@ TIEMPO_HEARTBEAT = 540
 app = Flask(__name__)
 CORS(app)
 
-# --- ADAPTADOR SSL PERSONALIZADO (FIX DECRYPTION_FAILED) ---
+# --- ADAPTADOR SSL PERSONALIZADO ---
 class SSLAdapter(HTTPAdapter):
-    """
-    Fuerza el uso de TLS v1.2 y ciphers compatibles para evitar errores
-    de desencriptación con Ngrok.
-    """
     def init_poolmanager(self, connections, maxsize, block=False):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        # Permitimos ciphers antiguos por compatibilidad si es necesario
         context.set_ciphers('DEFAULT:@SECLEVEL=1') 
         self.poolmanager = PoolManager(
             num_pools=connections,
@@ -71,14 +66,13 @@ class SSLAdapter(HTTPAdapter):
 def get_robust_session():
     session = requests.Session()
     retry = Retry(
-        total=5, # Aumentamos intentos
-        read=5,
-        connect=5,
-        backoff_factor=0.5, # Reintentos más rápidos
+        total=3,
+        read=3,
+        connect=3,
+        backoff_factor=0.5,
         status_forcelist=[500, 502, 503, 504],
         allowed_methods=["POST"]
     )
-    # Usamos nuestro adaptador SSL personalizado
     adapter = SSLAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -110,26 +104,29 @@ def get_headers():
         "Origin": "http://localhost:11434"
     }
 
-# CORRECCIÓN: Agregado parámetro json_mode=False
 def remote_generate(prompt, json_mode=False):
     payload = {
         "model": CUSTOM_MODEL_NAME, "prompt": prompt, "stream": False,
         "options": {"temperature": 0.2, "num_predict": 300, "top_k": 40}
     }
     
-    # Si pedimos JSON, se lo decimos a Ollama
     if json_mode:
         payload["format"] = "json"
 
     try:
-        # Usamos la sesión con SSL Fix
+        # TIMEOUT CONTROLADO: 300s (5 min). 
+        # Si tu PC tarda más, cortamos aquí para evitar que Render mate el worker.
         res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
             headers=get_headers(), 
-            timeout=600
+            timeout=300, 
+            verify=False 
         )
         return res.json().get("response", "") if res.status_code == 200 else ""
+    except requests.exceptions.Timeout:
+        print("⏱️ Error: El cerebro local tardó demasiado (Timeout 300s).")
+        return "Error: El cerebro está ocupado pensando. Intenta de nuevo en un momento."
     except Exception as e:
         print(f"❌ Error PC (Generate): {e}")
         return ""
@@ -140,7 +137,8 @@ def remote_embedding(text):
             f"{REMOTE_LLM_URL}/embeddings", 
             json={"model": "nomic-embed-text", "prompt": text}, 
             headers=get_headers(), 
-            timeout=60
+            timeout=30, # Embeddings deben ser rápidos
+            verify=False
         )
         return res.json().get("embedding") if res.status_code == 200 else None
     except Exception as e:
@@ -165,7 +163,7 @@ def sistema_auto_preservacion():
             except Exception as e:
                 print(f"⚠️ [ALIVE] Fallo en auto-ping: {e}")
         else:
-            print("⚠️ [ALIVE] Configura PUBLIC_URL para evitar sueño.")
+            print("⚠️ [ALIVE] No configurado. Agrega la variable PUBLIC_URL en Render.")
 
 threading.Thread(target=sistema_auto_preservacion, daemon=True).start()
 
@@ -201,7 +199,7 @@ def ciclo_vida_autonomo():
                     print(f"🧪 [AUTO] Estudiando: {tarea['tema_objetivo']}")
                     contenido = investigar_tema(tarea['tema_objetivo'])
                     
-                    if contenido:
+                    if contenido and "Error" not in contenido:
                         evaluacion = normalizar_json(remote_generate(f"Evalúa:\n{contenido}\nJSON: {{ \"aprobado\": true, \"critica\": \"ok\", \"codigo\": \"...\" }}", json_mode=True))
                         
                         if evaluacion.get('aprobado'):
@@ -222,7 +220,7 @@ def ciclo_vida_autonomo():
                     pilar = auditoria_sistema()
                     print(f"💡 [AUTO] Auditando... Pilar débil: {pilar}")
                     tema = generar_curriculum(pilar)
-                    if tema:
+                    if tema and "Error" not in tema:
                         supabase.table('laboratorio_ideas').insert({'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'}).execute()
             
             except Exception as e:
@@ -238,7 +236,7 @@ threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Hybrid Immortal V19"}), 200
+    return jsonify({"status": "Online", "mode": "Hybrid Immortal V20"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -264,9 +262,15 @@ def endpoint_preguntar():
     prompt = f"Experto Blender. Contexto: {contexto_str}. Pregunta: {pregunta}. Responde."
     respuesta = remote_generate(prompt)
     
-    # CORRECCIÓN: Ahora json_mode=True es aceptado correctamente
+    # Manejo robusto de errores de generación
+    if not respuesta or "Error" in respuesta:
+        return jsonify({
+            "respuesta_principal": f"Hubo un retraso en la conexión con mi cerebro local ({respuesta}). Por favor intenta de nuevo en unos segundos.",
+            "puntos_clave": [],
+            "fuente": "Error Timeout"
+        })
+
     json_final = normalizar_json(remote_generate(f"Formatea a JSON frontend:\nTexto: {respuesta}\nFuente: Híbrido\nJSON: {{ \"respuesta_principal\": \"...\", \"puntos_clave\": [], \"fuente\": \"...\" }}", json_mode=True))
-    
     if not json_final: json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Híbrido"}
     
     return jsonify(json_final)
