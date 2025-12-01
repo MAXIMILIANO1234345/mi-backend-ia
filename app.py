@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando SISTEMA DE INTELIGENCIA AUTÓNOMA (V8: Lab + Flow) ---")
+print("--- Iniciando CEREBRO ORQUESTADOR (V10: Curriculum Learning) ---")
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -29,7 +29,7 @@ GENERATIVE_MODEL = "models/gemini-2.5-flash"
 
 # CONFIGURACIÓN DE AUTO-MEJORA
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 20  # Segundos entre experimentos del laboratorio
+TIEMPO_ENTRE_CICLOS = 30 # Un poco más lento para pensar mejor
 
 app = Flask(__name__)
 CORS(app)
@@ -45,13 +45,14 @@ def cargar_catalogo():
             .eq('orquestador_id', ORQUESTADOR_ID)\
             .execute()
         
-        if response.data:
+        data_raw = response.data
+        if data_raw:
             CATALOGO_PILARES = {
                 item['nombre_clave']: {
                     **item,
                     'criterio_admision': item.get('criterio_admision') or "Información relevante."
                 } 
-                for item in response.data
+                for item in data_raw
             }
             print(f"✅ Catálogo cargado: {len(CATALOGO_PILARES)} pilares.")
     except Exception as e:
@@ -59,13 +60,31 @@ def cargar_catalogo():
 
 cargar_catalogo()
 
-# --- UTILIDADES ---
+# --- UTILIDADES BLINDADAS (FIX ERROR LISTAS) ---
+
 def limpiar_json(texto):
     texto = texto.strip()
     texto = re.sub(r'^```json\s*', '', texto)
     texto = re.sub(r'^```\s*', '', texto)
     texto = re.sub(r'\s*```$', '', texto)
     return texto.strip()
+
+def normalizar_respuesta_json(texto_json):
+    """
+    ARREGLO DEFINITIVO PARA 'list object has no attribute get'.
+    Convierte listas [dict] en dict simples.
+    """
+    try:
+        datos = json.loads(limpiar_json(texto_json))
+        if isinstance(datos, list):
+            if len(datos) > 0:
+                return datos[0] # Tomamos el primer elemento
+            else:
+                return {} # Lista vacía
+        return datos # Ya es diccionario
+    except Exception as e:
+        print(f"⚠️ Error parseando JSON: {e}")
+        return {}
 
 def get_embedding(text):
     try:
@@ -75,169 +94,187 @@ def get_embedding(text):
         return None
 
 # ==============================================================================
-# 🧬 EL CIENTÍFICO AUTÓNOMO (HILO DE SEGUNDO PLANO)
+# 🧬 EL JARDINERO CONSCIENTE (CURRICULUM LEARNING)
 # ==============================================================================
 
-def auditoria_sistema():
-    """Escanea la BD para encontrar el pilar más débil."""
+def determinar_nivel_pilar(conteo):
+    """Define la madurez de un pilar basado en la cantidad de datos."""
+    if conteo < 5:
+        return "NOVATO", "Busca definiciones fundamentales, conceptos básicos y 'Hola Mundo' del tema."
+    elif conteo < 20:
+        return "APRENDIZ", "Busca flujos de trabajo comunes, herramientas estándar y scripts sencillos."
+    elif conteo < 50:
+        return "PROFESIONAL", "Busca casos de uso específicos, solución de problemas y combinaciones de herramientas."
+    else:
+        return "EXPERTO", "Busca optimización de memoria, matemáticas vectoriales complejas, render engines internals y trucos oscuros."
+
+def auditoria_consciente():
+    """
+    Escanea la BD, cuenta registros y determina el NIVEL de cada pilar.
+    Retorna el pilar más débil y su nivel actual.
+    """
     stats = {}
+    
+    print("🧠 [AUTO] Realizando auto-consciencia de conocimientos...")
+    
     for clave, data in CATALOGO_PILARES.items():
         try:
             res = supabase.table(data['nombre_tabla']).select('id', count='exact').execute()
             stats[clave] = res.count
         except:
             stats[clave] = 0
+            
+    if not stats: return "api", "NOVATO", "Necesitamos empezar desde cero."
     
-    # Devuelve el pilar con menos datos
-    if not stats: return "api"
-    return min(stats, key=stats.get)
+    # Encontrar el más débil
+    pilar_debil = min(stats, key=stats.get)
+    conteo = stats[pilar_debil]
+    
+    nivel, estrategia = determinar_nivel_pilar(conteo)
+    
+    print(f"🚨 [DIAGNÓSTICO] Pilar '{pilar_debil}' tiene solo {conteo} recuerdos.")
+    print(f"   -> Nivel Detectado: {nivel}")
+    
+    return pilar_debil, nivel, estrategia
 
-def generar_curriculum(pilar_objetivo):
-    """Inventa un tema técnico que falte en ese pilar."""
+def generar_curriculum_adaptativo(pilar_objetivo, nivel, estrategia):
+    """Genera un tema acorde al nivel de madurez."""
     info = CATALOGO_PILARES.get(pilar_objetivo)
-    if not info: return "Conceptos avanzados de Blender"
     
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
     prompt = f"""
-    ERES EL ADMINISTRADOR DE UNA BASE DE DATOS DE BLENDER.
-    PILAR DÉBIL: "{info['nombre_clave']}" ({info['descripcion']}).
+    ERES EL MAESTRO DE UNA IA DE BLENDER.
     
-    Genera UN SOLO tema técnico específico y avanzado que falte.
-    Ejemplo: "Optimización de Light Bounces en Cycles".
-    Solo el título.
+    CONTEXTO:
+    Estamos mejorando el pilar: "{info['nombre_clave']}" ({info['descripcion']}).
+    Nivel Actual de la IA: {nivel}.
+    Estrategia Pedagógica: {estrategia}
+    
+    TAREA:
+    Genera UN SOLO título de tema para estudiar ahora mismo.
+    Debe ser estrictamente acorde al nivel.
+    - Si es NOVATO: No pidas cosas complejas. Pide bases.
+    - Si es EXPERTO: No pidas lo básico. Pide algo difícil.
+    
+    Responde SOLO el título del tema.
     """
     try:
         return modelo.generate_content(prompt).text.strip()
     except:
-        return "Trucos avanzados de Python en Blender"
+        return "Fundamentos de Blender Python"
 
-def investigar_tema(tema):
-    """Investiga un tema usando herramientas o conocimiento interno."""
+def investigar_tema(tema, nivel):
+    """Investiga ajustando la complejidad al nivel."""
     prompt = f"""
-    ACTÚA COMO EXPERTO TÉCNICO EN BLENDER.
-    TEMA: "{tema}"
+    ACTÚA COMO UN EXPERTO EN BLENDER.
+    TEMA A ENSEÑAR: "{tema}"
+    NIVEL DEL ESTUDIANTE: {nivel}
     
-    Genera una explicación técnica densa y UN SCRIPT DE PYTHON (bpy) funcional.
-    Prioriza documentación oficial.
+    Genera una explicación técnica y UN SCRIPT DE PYTHON (bpy).
+    Si el nivel es NOVATO, explica paso a paso.
+    Si el nivel es EXPERTO, sé conciso y ve al grano con código avanzado.
     """
     try:
         # Intento con búsqueda
-        tools = [{"google_search": {}}]
-        mod = genai.GenerativeModel(GENERATIVE_MODEL, tools=tools)
-        return mod.generate_content(prompt).text
-    except:
-        # Fallback conocimiento interno
-        mod = genai.GenerativeModel(GENERATIVE_MODEL)
-        return mod.generate_content(prompt).text
+        try:
+            tools = [{"google_search": {}}]
+            mod = genai.GenerativeModel(GENERATIVE_MODEL, tools=tools)
+            return mod.generate_content(prompt).text
+        except:
+            # Fallback
+            mod = genai.GenerativeModel(GENERATIVE_MODEL)
+            return mod.generate_content(prompt).text
+    except Exception as e:
+        return f"Error investigando: {e}"
 
 def ciclo_vida_autonomo():
-    """El bucle infinito de auto-mejora."""
-    print("🤖 [AUTO] Científico Autónomo iniciado...")
-    
+    print("🤖 [AUTO] Sistema de Aprendizaje Adaptativo iniciado...")
     while True:
         if MODO_AUTONOMO_ACTIVO:
             try:
-                # 1. BUSCAR TAREA EN EL LABORATORIO
-                res = supabase.table('laboratorio_ideas')\
-                    .select('*')\
-                    .in_('estado', ['borrador', 'rechazado'])\
-                    .limit(1)\
-                    .execute()
-                
+                # 1. VERIFICAR SI HAY TAREAS EN CURSO
+                res = supabase.table('laboratorio_ideas').select('*').in_('estado', ['borrador', 'rechazado']).limit(1).execute()
                 tarea = res.data[0] if res.data else None
                 
                 if tarea:
-                    # --- FASE DE EXPERIMENTACIÓN ---
-                    print(f"🧪 [LAB] Procesando: {tarea['tema_objetivo']} (Intento {tarea['intentos']})")
+                    # PROCESAR TAREA EXISTENTE
+                    print(f"🧪 [LAB] Procesando: {tarea['tema_objetivo']}")
                     
-                    contenido = investigar_tema(tarea['tema_objetivo'])
+                    # Recuperamos el nivel (podríamos guardarlo en DB, pero lo inferimos por simplicidad o default)
+                    nivel_actual = "INTERMEDIO" # Default para tareas ya creadas
                     
-                    # --- FASE DE JUICIO (CRÍTICA) ---
+                    contenido = investigar_tema(tarea['tema_objetivo'], nivel_actual)
+                    
+                    # Juicio con Normalización JSON
                     mod_juez = genai.GenerativeModel(GENERATIVE_MODEL)
-                    evaluacion = json.loads(limpiar_json(mod_juez.generate_content(
-                        f"Evalúa este contenido técnico Blender:\n{contenido}\nJSON: {{aprobado: bool, critica: str, codigo_detectado: str}}",
+                    evaluacion = normalizar_respuesta_json(mod_juez.generate_content(
+                        f"Evalúa este contenido Blender:\n{contenido}\nJSON: {{aprobado: bool, critica: str, codigo_detectado: str}}",
                         generation_config={"response_mime_type": "application/json"}
-                    ).text))
+                    ).text)
                     
                     if evaluacion.get('aprobado'):
-                        # --- GRADUACIÓN ---
-                        print(f"🎓 [LAB] Aprobado. Graduando a memoria real...")
-                        
-                        # Obtener tabla real
                         pilar_info = CATALOGO_PILARES.get(tarea['pilar_destino'])
                         if pilar_info:
                             tabla_real = pilar_info['nombre_tabla']
                             vec = get_embedding(f"{tarea['tema_objetivo']} {contenido}")
-                            
-                            # Insertar en memoria real
                             supabase.rpc('cerebro_aprender', {
-                                'p_orquestador_id': ORQUESTADOR_ID,
-                                'p_tabla_destino': tabla_real,
-                                'p_concepto': tarea['tema_objetivo'],
-                                'p_detalle': contenido,
-                                'p_codigo': evaluacion.get('codigo_detectado', ''),
-                                'p_vector': vec
+                                'p_orquestador_id': ORQUESTADOR_ID, 'p_tabla_destino': tabla_real,
+                                'p_concepto': tarea['tema_objetivo'], 'p_detalle': contenido,
+                                'p_codigo': evaluacion.get('codigo_detectado', ''), 'p_vector': vec
                             }).execute()
-                            
-                            # Borrar del laboratorio
                             supabase.table('laboratorio_ideas').delete().eq('id', tarea['id']).execute()
-                        else:
-                            print("⚠️ Error: Pilar destino no encontrado.")
+                            print(f"🎓 [LAB] Graduado: {tarea['tema_objetivo']}")
                     else:
-                        # --- RECHAZO ---
-                        print(f"⚠️ [LAB] Rechazado: {evaluacion.get('critica')}")
                         supabase.table('laboratorio_ideas').update({
-                            'estado': 'rechazado',
-                            'critica_ia': evaluacion.get('critica'),
-                            'intentos': tarea['intentos'] + 1
+                            'estado': 'rechazado', 'critica_ia': evaluacion.get('critica', 'Rechazado'), 'intentos': tarea['intentos'] + 1
                         }).eq('id', tarea['id']).execute()
-                
                 else:
-                    # --- FASE DE GENERACIÓN DE HIPÓTESIS (Si el lab está vacío) ---
-                    print("💡 [LAB] Laboratorio vacío. Buscando nuevos temas...")
-                    pilar_debil = auditoria_sistema()
-                    nuevo_tema = generar_curriculum(pilar_debil)
+                    # 2. SI NO HAY TAREAS -> DIAGNÓSTICO CONSCIENTE
+                    print("💡 [AUTO] Evaluando siguiente paso en el plan de estudios...")
+                    
+                    pilar, nivel, estrategia = auditoria_consciente()
+                    nuevo_tema = generar_curriculum_adaptativo(pilar, nivel, estrategia)
+                    
+                    print(f"📘 [PLAN] Agregando al pensum ({nivel}): {nuevo_tema}")
                     
                     supabase.table('laboratorio_ideas').insert({
-                        'orquestador_id': ORQUESTADOR_ID,
-                        'tema_objetivo': nuevo_tema,
-                        'pilar_destino': pilar_debil,
+                        'orquestador_id': ORQUESTADOR_ID, 
+                        'tema_objetivo': nuevo_tema, 
+                        'pilar_destino': pilar, 
                         'estado': 'borrador'
                     }).execute()
-                    print(f"✨ [LAB] Hipótesis creada: {nuevo_tema}")
                     
             except Exception as e:
                 print(f"❌ [AUTO] Error ciclo: {e}")
         
         time.sleep(TIEMPO_ENTRE_CICLOS)
 
-# ARRANCAR EL HILO DE FONDO
 threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
-
 # ==============================================================================
-# API PÚBLICA (INTERACCIÓN CON USUARIO)
+# API PÚBLICA (FIXED JSON LIST ERROR)
 # ==============================================================================
 
 def filtro_especialidad(pregunta):
     mod = genai.GenerativeModel(GENERATIVE_MODEL)
     try:
-        res = mod.generate_content(
-            f"Filtro Blender 3D. Pregunta: '{pregunta}'. JSON {{es_relevante: bool, razon: str}}",
+        # APLICAMOS EL FIX AQUÍ
+        return normalizar_respuesta_json(mod.generate_content(
+            f"Filtro Blender. Pregunta: '{pregunta}'. JSON {{es_relevante: bool, razon: str}}",
             generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(limpiar_json(res.text))
+        ).text)
     except: return {"es_relevante": True}
 
 def planificar_busqueda(pregunta):
     mod = genai.GenerativeModel(GENERATIVE_MODEL)
     pilares = "\n".join([f"- {k}: {v['descripcion']}" for k,v in CATALOGO_PILARES.items()])
     try:
-        res = mod.generate_content(
+        # APLICAMOS EL FIX AQUÍ
+        data = normalizar_respuesta_json(mod.generate_content(
             f"Pregunta: {pregunta}\nTablas:\n{pilares}\nJSON {{pilares_seleccionados: [str]}}",
             generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(limpiar_json(res.text)).get("pilares_seleccionados", [])
+        ).text)
+        return data.get("pilares_seleccionados", [])
     except: return ["api"]
 
 def consultar_memoria_flow(pilares, vector):
@@ -260,27 +297,28 @@ def evaluar_suficiencia(pregunta, contexto):
     if not contexto: return False, "Vacio"
     mod = genai.GenerativeModel(GENERATIVE_MODEL)
     try:
-        res = mod.generate_content(
+        # APLICAMOS EL FIX AQUÍ
+        data = normalizar_respuesta_json(mod.generate_content(
             f"Pregunta: {pregunta}\nContexto: {contexto}\n¿Suficiente? JSON {{es_suficiente: bool, razon: str}}",
             generation_config={"response_mime_type": "application/json"}
-        )
-        d = json.loads(limpiar_json(res.text))
-        return d.get("es_suficiente", False), d.get("razon", "")
+        ).text)
+        return data.get("es_suficiente", False), data.get("razon", "")
     except: return False, "Error"
 
 def aprender_usuario(pregunta, contexto_parcial):
-    """Aprendizaje disparado por el usuario (Prioridad Alta)"""
     print(f"🌐 [USER] Investigando: {pregunta}")
-    contenido = investigar_tema(pregunta)
+    # Usamos nivel 'EXPERTO' para el usuario porque asumimos que pregunta algo que necesita
+    contenido = investigar_tema(pregunta, "EXPERTO") 
     
-    # Clasificar y guardar
     try:
         criterios = "\n".join([f"- {k}: {v.get('criterio_admision')}" for k,v in CATALOGO_PILARES.items()])
         mod = genai.GenerativeModel(GENERATIVE_MODEL)
-        datos = json.loads(limpiar_json(mod.generate_content(
+        
+        # APLICAMOS EL FIX AQUÍ (Donde fallaba antes)
+        datos = normalizar_respuesta_json(mod.generate_content(
             f"Clasifica: {contenido}\nCriterios: {criterios}\nJSON {{tabla_destino: str|null, concepto: str, detalle: str, codigo: str}}",
             generation_config={"response_mime_type": "application/json"}
-        ).text))
+        ).text)
         
         if datos.get("tabla_destino") in CATALOGO_PILARES:
             tabla = CATALOGO_PILARES[datos["tabla_destino"]]['nombre_tabla']
@@ -298,7 +336,7 @@ def aprender_usuario(pregunta, contexto_parcial):
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Active", "mode": "Autonomous Lab V8"}), 200
+    return jsonify({"status": "Active", "mode": "Conscious Learner V10"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
@@ -308,20 +346,16 @@ def endpoint_preguntar():
     
     print(f"\n📨 Usuario: {pregunta}")
     
-    # 1. Filtro
     analisis = filtro_especialidad(pregunta)
     if not analisis.get("es_relevante", True):
         return jsonify({"respuesta_principal": "Solo Blender/3D.", "puntos_clave": [], "fuente": "Filtro"})
         
-    # 2. Memoria
     pilares = planificar_busqueda(pregunta)
     contexto = consultar_memoria_flow(pilares, get_embedding(pregunta))
     
-    # 3. Suficiencia
     suficiente, razon = False, ""
     if contexto: suficiente, razon = evaluar_suficiencia(pregunta, contexto)
     
-    # 4. Respuesta
     mod = genai.GenerativeModel(GENERATIVE_MODEL)
     if suficiente:
         txt = mod.generate_content(f"Responde experto con: {contexto}. Pregunta: {pregunta}").text
@@ -330,13 +364,13 @@ def endpoint_preguntar():
         txt = aprender_usuario(pregunta, contexto)
         src = "Investigación Activa"
         
-    # 5. Formato JSON
     try:
-        res = mod.generate_content(
+        # APLICAMOS EL FIX AQUÍ
+        final_data = normalizar_respuesta_json(mod.generate_content(
             f"JSON Frontend:\nTEXTO:{txt}\nFUENTE:{src}\nJSON:{{respuesta_principal: str, puntos_clave: [{{titulo:str, descripcion:str}}], fuente: str}}",
             generation_config={"response_mime_type": "application/json"}
-        )
-        return jsonify(json.loads(limpiar_json(res.text)))
+        ).text)
+        return jsonify(final_data)
     except:
         return jsonify({"respuesta_principal": txt, "puntos_clave": [], "fuente": src})
 
