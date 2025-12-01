@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- ORQUESTADOR HÍBRIDO INMORTAL (V15: Auto-Preservación) ---")
+print("--- ORQUESTADOR HÍBRIDO INMORTAL (V16: Timeout Extendido) ---")
 load_dotenv()
 
 # Credenciales
@@ -36,7 +36,7 @@ CUSTOM_MODEL_NAME = "blender-expert"
 
 # CONFIGURACIÓN AUTÓNOMA
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 60  # 10 Minutos (Más relajado para no saturar tu PC)
+TIEMPO_ENTRE_CICLOS = 600  # 10 Minutos (Más relajado para no saturar tu PC)
 TIEMPO_HEARTBEAT = 540     # 9 Minutos (Se despierta justo antes de que Render lo duerma)
 
 app = Flask(__name__)
@@ -72,8 +72,8 @@ def remote_generate(prompt):
         "options": {"temperature": 0.2, "num_predict": 300, "top_k": 40}
     }
     try:
-        # Timeout extendido para tareas de fondo
-        res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, headers=get_headers(), timeout=120)
+        # CORRECCIÓN CRÍTICA: Aumentamos timeout a 600s (10 mins) para soportar tu i3
+        res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, headers=get_headers(), timeout=600)
         return res.json().get("response", "") if res.status_code == 200 else ""
     except Exception as e:
         print(f"❌ Error PC: {e}")
@@ -81,7 +81,8 @@ def remote_generate(prompt):
 
 def remote_embedding(text):
     try:
-        res = requests.post(f"{REMOTE_LLM_URL}/embeddings", json={"model": "nomic-embed-text", "prompt": text}, headers=get_headers(), timeout=30)
+        # Embeddings suelen ser rápidos, pero subimos a 60s por seguridad
+        res = requests.post(f"{REMOTE_LLM_URL}/embeddings", json={"model": "nomic-embed-text", "prompt": text}, headers=get_headers(), timeout=60)
         return res.json().get("embedding") if res.status_code == 200 else None
     except: return None
 
@@ -180,7 +181,7 @@ threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Hybrid Immortal V15"}), 200
+    return jsonify({"status": "Online", "mode": "Hybrid Immortal V16"}), 200
 
 @app.route("/health", methods=["GET"]) # Endpoint específico para el heartbeat
 def health_check():
@@ -214,4 +215,3 @@ def endpoint_preguntar():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
