@@ -86,10 +86,16 @@ def remote_generate(prompt, json_mode=False):
     }
     if json_mode: payload["format"] = "json"
     
+    # Headers obligatorios para evitar el error 403 de Ngrok Free
+    headers = {
+        "ngrok-skip-browser-warning": "true",
+        "Content-Type": "application/json"
+    }
+    
     try:
         # Timeout alto (120s) porque la red doméstica puede tener latencia
         # print(f"📡 Llamando a la base ({REMOTE_LLM_URL})...") # Debug reducido
-        res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, timeout=120)
+        res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, headers=headers, timeout=120)
         
         if res.status_code == 200:
             return res.json().get("response", "")
@@ -102,14 +108,27 @@ def remote_generate(prompt, json_mode=False):
 
 def remote_embedding(text):
     """Pide a tu PC que convierta texto a números (vectores)."""
+    # Headers obligatorios para evitar el error 403 de Ngrok Free
+    headers = {
+        "ngrok-skip-browser-warning": "true",
+        "Content-Type": "application/json"
+    }
+    
     try:
-        res = requests.post(f"{REMOTE_LLM_URL}/embeddings", json={"model": "nomic-embed-text", "prompt": text}, timeout=30)
+        res = requests.post(
+            f"{REMOTE_LLM_URL}/embeddings", 
+            json={"model": "nomic-embed-text", "prompt": text}, 
+            headers=headers, 
+            timeout=30
+        )
         if res.status_code == 200:
             return res.json().get("embedding")
         else:
-            print(f"⚠️ Error Embedding PC: {res.status_code}")
+            print(f"⚠️ Error Embedding PC (Status {res.status_code}): {res.text}")
             return None
-    except: return None
+    except Exception as e:
+        print(f"⚠️ Excepción Embedding: {e}")
+        return None
 
 def normalizar_json(texto):
     """Limpia el JSON que llega de tu PC."""
@@ -269,3 +288,4 @@ def endpoint_preguntar():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+    
