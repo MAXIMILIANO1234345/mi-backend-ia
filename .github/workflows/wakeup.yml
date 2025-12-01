@@ -1,0 +1,17 @@
+name: Despertador de IA
+
+on:
+  schedule:
+    # Se ejecuta cada 30 minutos
+    - cron: '*/30 * * * *'
+  workflow_dispatch: # Permite activarlo manualmente desde GitHub si quieres probarlo
+
+jobs:
+  ping_server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Despertar Orquestador
+        run: |
+          # Reemplaza con tu URL real de Render
+          curl -I https://mi-backend-ia-2.onrender.com
+          echo "Señal de despertar enviada correctamente."
