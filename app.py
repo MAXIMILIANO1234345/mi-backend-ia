@@ -10,41 +10,35 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando ORQUESTADOR HÍBRIDO (Cerebro Remoto: Tu PC) ---")
+print("--- Iniciando ORQUESTADOR HÍBRIDO (V13: Conexión Directa) ---")
 load_dotenv()
 
-# Credenciales de Nube (Supabase)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL')
 
-# LA URL MÁGICA: La dirección de tu túnel Ngrok
-REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL') 
-
-# --- CORRECCIÓN AUTOMÁTICA DE URL ---
+# Limpieza automática de la URL de Ngrok
 if REMOTE_LLM_URL:
-    REMOTE_LLM_URL = REMOTE_LLM_URL.strip().rstrip('/') 
+    REMOTE_LLM_URL = REMOTE_LLM_URL.strip().rstrip('/')
     if not REMOTE_LLM_URL.endswith('/api'):
-        print(f"⚠️ Detectado URL sin '/api'. Corrigiendo automáticamente...")
         REMOTE_LLM_URL += '/api'
-    print(f"✅ URL del Cerebro Configurada: {REMOTE_LLM_URL}")
+    print(f"✅ Conectando al Cerebro Local en: {REMOTE_LLM_URL}")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
-    print("⚠️ Advertencia: Faltan variables de entorno en Render.")
+    # Fallback para pruebas locales
     if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-ORQUESTADOR_ID = 1 
-
-CUSTOM_MODEL_NAME = "blender-expert" 
+ORQUESTADOR_ID = 1
+CUSTOM_MODEL_NAME = "blender-expert"
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 60 
+TIEMPO_ENTRE_CICLOS = 60
 
 app = Flask(__name__)
 CORS(app)
 
 # --- CACHE DE PILARES ---
-CATALOGO_PILARES = {} 
-
+CATALOGO_PILARES = {}
 def cargar_catalogo():
     global CATALOGO_PILARES
     try:
@@ -52,7 +46,7 @@ def cargar_catalogo():
         if response.data:
             CATALOGO_PILARES = {
                 i['nombre_clave']: {
-                    **i, 
+                    **i,
                     'criterio_admision': i.get('criterio_admision') or "Información relevante."
                 } for i in response.data
             }
@@ -62,21 +56,19 @@ def cargar_catalogo():
 
 cargar_catalogo()
 
-# --- UTILIDADES DE CONEXIÓN REMOTA (EL CABLE A TU CASA) ---
+# --- UTILIDADES DE CONEXIÓN REMOTA ---
 
-def get_ngrok_headers():
+def get_headers():
     """
-    Retorna headers reforzados para engañar a Ngrok y a Ollama.
+    Headers esenciales. Solo necesitamos saltar la advertencia de Ngrok.
+    Al haber configurado OLLAMA_ORIGINS='*' en tu PC, ya no necesitamos más trucos.
     """
     return {
-        # Llave para pasar la pantalla de advertencia de Ngrok Free
         "ngrok-skip-browser-warning": "true",
-        # Fingimos ser un navegador real para evitar bloqueos de bots
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        # Fingimos ser localhost para que Ollama no rechace la conexión externa
-        "Origin": "http://localhost:11434",
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        # CAMUFLAJE: Le decimos a Ollama que somos locales para evitar el bloqueo 403
+        "User-Agent": "Ollama-Client/1.0",
+        "Origin": "http://localhost:11434"
     }
 
 def remote_generate(prompt, json_mode=False):
@@ -92,46 +84,38 @@ def remote_generate(prompt, json_mode=False):
     }
     if json_mode: payload["format"] = "json"
     
-    target_url = f"{REMOTE_LLM_URL}/generate"
-    
     try:
-        # print(f"📡 DEBUG: Conectando a {target_url}...")
         res = requests.post(
-            target_url, 
-            json=payload, 
-            headers=get_ngrok_headers(), 
+            f"{REMOTE_LLM_URL}/generate",
+            json=payload,
+            headers=get_headers(),
             timeout=120
         )
         
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
-            # Imprimimos el inicio de la respuesta para diagnosticar
-            error_preview = res.text[:200].replace('\n', ' ')
-            print(f"❌ Error PC (Status {res.status_code}): {error_preview}...")
-            return f"Error: El cerebro remoto devolvió estatus {res.status_code}."
+            # Si falla ahora, será un error real de red, no de permisos
+            print(f"❌ Error PC (Status {res.status_code}): {res.text[:100]}")
+            return f"Error {res.status_code}: Falla en el cerebro local."
     except Exception as e:
-        print(f"❌ Error Túnel ({target_url}): {e}")
-        return "Error: No puedo conectar con tu PC."
+        print(f"❌ Error de Conexión: {e}")
+        return "Error: No se puede contactar con tu PC (Revisa Ngrok)."
 
 def remote_embedding(text):
-    target_url = f"{REMOTE_LLM_URL}/embeddings"
     try:
         res = requests.post(
-            target_url, 
-            json={"model": "nomic-embed-text", "prompt": text}, 
-            headers=get_ngrok_headers(), 
+            f"{REMOTE_LLM_URL}/embeddings",
+            json={"model": "nomic-embed-text", "prompt": text},
+            headers=get_headers(),
             timeout=30
         )
         if res.status_code == 200:
             return res.json().get("embedding")
         else:
-            error_preview = res.text[:200].replace('\n', ' ')
-            print(f"⚠️ Error Embedding PC (Status {res.status_code}): {error_preview}...")
+            print(f"⚠️ Error Embedding (Status {res.status_code})")
             return None
-    except Exception as e:
-        print(f"⚠️ Excepción Embedding: {e}")
-        return None
+    except: return None
 
 def normalizar_json(texto):
     try:
@@ -181,11 +165,11 @@ def ciclo_vida_autonomo():
                 tarea = res.data[0] if res.data else None
                 
                 if tarea:
-                    print(f"🧪 [NUBE -> PC] Delegando tarea: {tarea['tema_objetivo']}")
+                    print(f"🧪 [NUBE -> PC] Tarea: {tarea['tema_objetivo']}")
                     contenido = investigar_tema(tarea['tema_objetivo'])
                     
                     if not contenido or "Error" in contenido:
-                        print("⚠️ PC no respondió. Reintentando en 60s...")
+                        print("⚠️ PC no respondió. Reintentando...")
                         time.sleep(60)
                         continue
 
@@ -203,20 +187,16 @@ def ciclo_vida_autonomo():
                                     'p_codigo': evaluacion.get('codigo', ''), 'p_vector': vec
                                 }).execute()
                                 supabase.table('laboratorio_ideas').delete().eq('id', tarea['id']).execute()
-                                print(f"🎓 [NUBE] Tarea completada y guardada.")
+                                print(f"🎓 [NUBE] Guardado: {tarea['tema_objetivo']}")
                     else:
                         supabase.table('laboratorio_ideas').update({'estado': 'rechazado'}).eq('id', tarea['id']).execute()
-                
                 else:
                     pilar, nivel, estrategia = auditoria_sistema()
                     tema = generar_curriculum(pilar, nivel, estrategia)
                     if tema and "Error" not in tema:
-                        supabase.table('laboratorio_ideas').insert({
-                            'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'
-                        }).execute()
+                        supabase.table('laboratorio_ideas').insert({'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'}).execute()
             
-            except Exception as e: print(f"Error ciclo híbrido: {e}")
-        
+            except Exception as e: print(f"Error ciclo: {e}")
         time.sleep(TIEMPO_ENTRE_CICLOS)
 
 threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
@@ -245,23 +225,19 @@ def consultar_memoria(pilares, vector):
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
-    print(f"\n📨 Usuario Web: {pregunta}")
+    print(f"\n📨 Usuario: {pregunta}")
     
     vec = remote_embedding(pregunta)
     pilares = planificar_busqueda(pregunta)
     contexto = consultar_memoria(pilares, vec)
     contexto_str = "\n".join(contexto) if contexto else ""
     
-    fuente = "Memoria Experta (Tu PC)" if contexto else "Conocimiento Latente (Tu PC)"
-    prompt = f"Experto Blender. Contexto recuperado: {contexto_str}. Pregunta usuario: {pregunta}. Responde técnicamente."
+    fuente = "Memoria PC" if contexto else "Cerebro PC"
+    prompt = f"Experto Blender. Contexto: {contexto_str}. Pregunta: {pregunta}. Responde."
     respuesta = remote_generate(prompt)
     
     if not respuesta or "Error" in respuesta:
-        return jsonify({
-            "respuesta_principal": "Lo siento, no puedo conectar con mi cerebro local. Verifica Ngrok.",
-            "puntos_clave": [],
-            "fuente": "Error de Conexión"
-        })
+        return jsonify({"respuesta_principal": "Error conectando con PC.", "puntos_clave": [], "fuente": "Error"})
 
     prompt_fmt = f"Formatea a JSON frontend.\nTexto: {respuesta}\nFuente: {fuente}\nJSON: {{ \"respuesta_principal\": \"...\", \"puntos_clave\": [{{ \"titulo\": \"...\", \"descripcion\": \"...\" }}], \"fuente\": \"{fuente}\" }}"
     json_final = normalizar_json(remote_generate(prompt_fmt, json_mode=True))
