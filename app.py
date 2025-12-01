@@ -18,13 +18,20 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 # LA URL MÁGICA: La dirección de tu túnel Ngrok
-# Debes configurarla en Render: https://xxxx.ngrok-free.app/api
 REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL') 
+
+# --- CORRECCIÓN AUTOMÁTICA DE URL ---
+# Si el usuario olvidó poner '/api' al final en Render, lo arreglamos aquí.
+if REMOTE_LLM_URL:
+    REMOTE_LLM_URL = REMOTE_LLM_URL.strip().rstrip('/') # Quitar espacios y barra final
+    if not REMOTE_LLM_URL.endswith('/api'):
+        print(f"⚠️ Detectado URL sin '/api'. Corrigiendo automáticamente...")
+        REMOTE_LLM_URL += '/api'
+    print(f"✅ URL del Cerebro Configurada: {REMOTE_LLM_URL}")
 
 # Validación de seguridad
 if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
     print("⚠️ Advertencia: Faltan variables de entorno en Render.")
-    # Fallback por si lo pruebas en local sin configurar todo
     if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -81,14 +88,14 @@ def remote_generate(prompt, json_mode=False):
     
     try:
         # Timeout alto (120s) porque la red doméstica puede tener latencia
-        print(f"📡 Llamando a la base ({REMOTE_LLM_URL})...")
+        # print(f"📡 Llamando a la base ({REMOTE_LLM_URL})...") # Debug reducido
         res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, timeout=120)
         
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
-            print(f"❌ Error PC: {res.text}")
-            return "Error: El cerebro remoto devolvió un error."
+            print(f"❌ Error PC (Status {res.status_code}): {res.text}")
+            return f"Error: El cerebro remoto devolvió estatus {res.status_code}."
     except Exception as e:
         print(f"❌ Error Túnel: {e}")
         return "Error: No puedo conectar con tu PC. ¿Está encendido Ngrok?"
@@ -97,7 +104,11 @@ def remote_embedding(text):
     """Pide a tu PC que convierta texto a números (vectores)."""
     try:
         res = requests.post(f"{REMOTE_LLM_URL}/embeddings", json={"model": "nomic-embed-text", "prompt": text}, timeout=30)
-        return res.json().get("embedding")
+        if res.status_code == 200:
+            return res.json().get("embedding")
+        else:
+            print(f"⚠️ Error Embedding PC: {res.status_code}")
+            return None
     except: return None
 
 def normalizar_json(texto):
@@ -186,12 +197,13 @@ def ciclo_vida_autonomo():
                 else:
                     # Crear tarea nueva (Auditoria)
                     pilar, nivel, estrategia = auditoria_sistema()
-                    print(f"💡 [NUBE] Auditando... Pilar débil: {pilar}")
+                    # print(f"💡 [NUBE] Auditando... Pilar débil: {pilar}")
                     tema = generar_curriculum(pilar, nivel, estrategia)
                     if tema and "Error" not in tema:
                         supabase.table('laboratorio_ideas').insert({
                             'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'
                         }).execute()
+                        print(f"💡 [NUBE] Nueva orden de trabajo creada: {tema}")
             
             except Exception as e: print(f"Error ciclo híbrido: {e}")
         
@@ -220,25 +232,21 @@ def consultar_memoria(pilares, vector):
             except: pass
     return hallazgos
 
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "Online", "mode": "Hybrid (Render + Local PC)"}), 200
-
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
     print(f"\n📨 Usuario Web: {pregunta}")
     
-    # 1. Vectorización Remota
+    # 1. Tu PC calcula el vector
     vec = remote_embedding(pregunta)
     
-    # 2. Búsqueda en Supabase (Nube)
+    # 2. Render busca en Supabase
     pilares = planificar_busqueda(pregunta)
     contexto = consultar_memoria(pilares, vec)
     contexto_str = "\n".join(contexto) if contexto else ""
     
-    # 3. Generación Remota (Tu PC piensa)
+    # 3. Tu PC redacta la respuesta
     fuente = "Memoria Experta (Tu PC)" if contexto else "Conocimiento Latente (Tu PC)"
     prompt = f"Experto Blender. Contexto recuperado: {contexto_str}. Pregunta usuario: {pregunta}. Responde técnicamente."
     respuesta = remote_generate(prompt)
