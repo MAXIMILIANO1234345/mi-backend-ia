@@ -5,14 +5,18 @@ import time
 import threading
 import requests
 import urllib.request
+import urllib3 # Importamos para silenciar advertencias SSL
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- ORQUESTADOR HÍBRIDO INMORTAL (V16: Timeout Extendido) ---")
+print("--- ORQUESTADOR HÍBRIDO INMORTAL (V17: SSL Bypass Fix) ---")
 load_dotenv()
+
+# Silenciar advertencias de SSL (Necesario al usar verify=False con Ngrok)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Credenciales
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -72,8 +76,14 @@ def remote_generate(prompt):
         "options": {"temperature": 0.2, "num_predict": 300, "top_k": 40}
     }
     try:
-        # CORRECCIÓN CRÍTICA: Aumentamos timeout a 600s (10 mins) para soportar tu i3
-        res = requests.post(f"{REMOTE_LLM_URL}/generate", json=payload, headers=get_headers(), timeout=600)
+        # CORRECCIÓN SSL: verify=False evita el error DECRYPTION_FAILED
+        res = requests.post(
+            f"{REMOTE_LLM_URL}/generate", 
+            json=payload, 
+            headers=get_headers(), 
+            timeout=600,
+            verify=False 
+        )
         return res.json().get("response", "") if res.status_code == 200 else ""
     except Exception as e:
         print(f"❌ Error PC: {e}")
@@ -81,8 +91,14 @@ def remote_generate(prompt):
 
 def remote_embedding(text):
     try:
-        # Embeddings suelen ser rápidos, pero subimos a 60s por seguridad
-        res = requests.post(f"{REMOTE_LLM_URL}/embeddings", json={"model": "nomic-embed-text", "prompt": text}, headers=get_headers(), timeout=60)
+        # CORRECCIÓN SSL TAMBIÉN AQUÍ
+        res = requests.post(
+            f"{REMOTE_LLM_URL}/embeddings", 
+            json={"model": "nomic-embed-text", "prompt": text}, 
+            headers=get_headers(), 
+            timeout=60, 
+            verify=False
+        )
         return res.json().get("embedding") if res.status_code == 200 else None
     except: return None
 
@@ -215,3 +231,4 @@ def endpoint_preguntar():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+    
