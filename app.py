@@ -6,9 +6,10 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando CEREBRO ORQUESTADOR (Modo Estrella) ---")
+print("--- Iniciando CEREBRO ORQUESTADOR (V4: Especialista + Flow State) ---")
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
@@ -18,255 +19,288 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("⚠️ Faltan variables de entorno (.env)")
 
-# Configuración de Clientes
 genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# CONSTANTES DEL ORQUESTADOR
-ORQUESTADOR_ID = 1 # Asumimos que somos el "Alpha" (ID 1)
+ORQUESTADOR_ID = 1 
 EMBEDDING_MODEL = "models/text-embedding-004"
+# Usamos el modelo flash por su velocidad para el 'Flow State'
 GENERATIVE_MODEL = "models/gemini-2.5-flash" 
 
 app = Flask(__name__)
 CORS(app)
 
-# --- 2. CACHE DE PILARES (Memoria de Trabajo) ---
-# Al iniciar, cargamos el mapa del círculo para no consultar SQL a cada rato
+# --- CACHE DE PILARES ---
 CATALOGO_PILARES = {} 
 
 def cargar_catalogo():
-    """Descarga el mapa mental del Orquestador desde Supabase."""
     global CATALOGO_PILARES
     try:
-        # Traemos solo los pilares de ESTE orquestador
+        # Traemos también el criterio de admisión para que el filtro sea inteligente
         response = supabase.table('catalogo_pilares')\
-            .select('nombre_clave, nombre_tabla, descripcion')\
+            .select('nombre_clave, nombre_tabla, descripcion, criterio_admision')\
             .eq('orquestador_id', ORQUESTADOR_ID)\
             .execute()
-        
         if response.data:
             CATALOGO_PILARES = {item['nombre_clave']: item for item in response.data}
-            print(f"✅ Catálogo cargado: {len(CATALOGO_PILARES)} pilares disponibles.")
-        else:
-            print("⚠️ ADVERTENCIA: El catálogo está vacío. Ejecuta el SQL de setup.")
+            print(f"✅ Catálogo cargado: {len(CATALOGO_PILARES)} pilares listos.")
     except Exception as e:
-        print(f"❌ Error cargando catálogo: {e}")
+        print(f"❌ Error catálogo: {e}")
 
-# Cargar al inicio
 cargar_catalogo()
 
-# --- 3. UTILIDADES ---
+# --- UTILIDADES ---
 
 def limpiar_json(texto):
-    """Limpia respuestas del LLM para obtener JSON puro."""
     texto = texto.strip()
-    # Eliminar bloques de código markdown
     texto = re.sub(r'^```json\s*', '', texto)
     texto = re.sub(r'^```\s*', '', texto)
     texto = re.sub(r'\s*```$', '', texto)
     return texto.strip()
 
 def get_embedding(text):
-    """Vectorización estándar."""
     try:
         res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="RETRIEVAL_QUERY")
         return res['embedding']
-    except Exception as e:
-        print(f"❌ Error vectorizando: {e}")
+    except:
         return None
 
-# --- 4. LÓGICA DEL ORQUESTADOR (EL CEREBRO) ---
+# --- MÓDULOS COGNITIVOS ---
 
-def planificar_busqueda(pregunta):
+def filtro_especialidad(pregunta):
     """
-    Paso 1: El Orquestador decide DÓNDE buscar.
-    No buscamos en todas las tablas, solo en las relevantes.
+    EL PORTERO: Rechaza preguntas triviales o fuera del dominio.
+    Ahorra tiempo y evita "basura" en la base de datos.
     """
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+    prompt = f"""
+    ERES UN FILTRO DE SEGURIDAD PARA UN ASISTENTE EXPERTO EN BLENDER 3D.
     
-    # Crear lista legible para el prompt
+    PREGUNTA ENTRANTE: "{pregunta}"
+    
+    REGLAS DE ADMISIÓN:
+    1. ACEPTAR solo si se relaciona con: Blender, Python (bpy), Modelado 3D, Render, Animación o Gráficos por Computadora.
+    2. RECHAZAR si es sobre: Cocina, Política, Deportes, Clima, Chistes o Saludos vacíos ("hola" sin pregunta).
+    
+    RESPONDE JSON:
+    {{
+        "es_relevante": true/false,
+        "razon": "Breve motivo"
+    }}
+    """
+    try:
+        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        return json.loads(limpiar_json(res.text))
+    except:
+        return {"es_relevante": True, "razon": "Pass-through por error"}
+
+def planificar_busqueda(pregunta):
+    """Decide qué tablas consultar."""
+    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
     lista_pilares = "\n".join([f"- {k}: {v['descripcion']}" for k, v in CATALOGO_PILARES.items()])
     
     prompt = f"""
-    Eres el Orquestador de una Base de Datos de Conocimiento de Blender.
-    
-    PREGUNTA DEL USUARIO: "{pregunta}"
-    
-    TU MEMORIA ESTÁ DIVIDIDA EN ESTAS BÓVEDAS (TABLAS):
+    Eres el Orquestador de Blender.
+    PREGUNTA: "{pregunta}"
+    TABLAS:
     {lista_pilares}
     
-    TAREA:
-    Identifica en qué bóveda(s) (1 o 2 máximo) es más probable encontrar la respuesta.
-    Si la pregunta es muy general, elige 'logica_ia' o 'api'.
-    
-    RESPONDE SOLO JSON:
-    {{ "pilares_seleccionados": ["nombre_clave_1", "nombre_clave_2"] }}
+    JSON: {{ "pilares_seleccionados": ["nombre_clave"] }}
     """
-    
     try:
         res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        data = json.loads(limpiar_json(res.text))
-        return data.get("pilares_seleccionados", [])
+        return json.loads(limpiar_json(res.text)).get("pilares_seleccionados", [])
     except:
-        return ["api"] # Fallback seguro
+        return ["api"]
 
-def consultar_memoria(pilares_objetivo, vector_pregunta):
+def consultar_memoria_flow(pilares_objetivo, vector_pregunta):
     """
-    Paso 2: Ejecuta 'cerebro_recordar' en las tablas seleccionadas.
+    USO DEL PODER DE LA BASE DE DATOS:
+    Llama a 'cerebro_recordar_flow' (definida en el SQL optimizado)
+    para usar índices HNSW y obtener respuesta ultra-rápida.
     """
     hallazgos = []
-    
     for clave in pilares_objetivo:
         if clave not in CATALOGO_PILARES: continue
-        
-        tabla_real = CATALOGO_PILARES[clave]['nombre_tabla']
-        print(f"🧠 Consultando memoria: {tabla_real}...")
-        
+        tabla = CATALOGO_PILARES[clave]['nombre_tabla']
         try:
-            # Llamada a la RPC centralizada del SQL
-            response = supabase.rpc('cerebro_recordar', {
+            # RPC OPTIMIZADA (Flow State)
+            response = supabase.rpc('cerebro_recordar_flow', {
                 'p_orquestador_id': ORQUESTADOR_ID,
-                'p_tabla_destino': tabla_real,
+                'p_tabla_destino': tabla,
                 'p_vector': vector_pregunta,
-                'p_umbral': 0.4, # Umbral de similitud
-                'p_limite': 3
+                'p_umbral': 0.35,
+                'p_limite': 5
             }).execute()
             
             if response.data:
                 for item in response.data:
-                    hallazgos.append(f"[{clave.upper()}] Concepto: {item['concepto']}\nDetalle: {item['detalle']}\nSimilitud: {item['similitud']:.2f}")
-                    
+                    # Notar que el SQL devuelve 'tipo_recuerdo' (Directo/Asociado)
+                    tipo = item.get('tipo_recuerdo', 'Directo')
+                    hallazgos.append(f"[{clave.upper()} - {tipo}] {item['concepto']}: {item['detalle']} (Código: {item['codigo']})")
         except Exception as e:
-            print(f"⚠️ Error leyendo {tabla_real}: {e}")
-            
+            print(f"⚠️ Error en {tabla}: {e}")
     return hallazgos
 
-def aprender_y_guardar(pregunta):
-    """
-    Paso 3 (CRÍTICO): Si no sabemos la respuesta, INVESTIGAMOS y APRENDEMOS.
-    """
-    print("🌐 Modo Aprendizaje Activado: Buscando información externa...")
+def evaluar_suficiencia(pregunta, contexto_recuperado):
+    """El Juez Crítico."""
+    if not contexto_recuperado: return False, "Memoria vacía"
+    
     modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+    contexto_str = "\n".join(contexto_recuperado)
     
-    # 1. INVESTIGAR (Usamos Gemini con herramienta de búsqueda si disponible, o simulación)
-    # Prompt diseñado para extraer información estructurada de su conocimiento base + búsqueda
-    prompt_investigacion = f"""
-    El usuario pregunta: "{pregunta}".
-    No tengo esta información en mi base de datos local.
+    prompt = f"""
+    PREGUNTA: "{pregunta}"
+    MEMORIA: {contexto_str}
     
-    Por favor, responde a la pregunta con tu mejor conocimiento experto en Blender y Python.
-    Sé técnico, preciso y da ejemplos de código si aplica.
+    ¿La memoria tiene código y detalles técnicos SUFICIENTES para responder?
+    JSON: {{ "es_suficiente": true/false, "razon_critica": "..." }}
     """
+    try:
+        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        ev = json.loads(limpiar_json(res.text))
+        return ev.get("es_suficiente", False), ev.get("razon_critica", "N/A")
+    except:
+        return False, "Error evaluando"
+
+def aprender_experto(pregunta, contexto_parcial=""):
+    """
+    INVESTIGACIÓN DIRIGIDA Y PROFESIONAL.
+    Usa herramientas de búsqueda (simuladas por prompt grounding) 
+    enfocándose en la documentación oficial.
+    """
+    print("🌐 INVESTIGANDO EN FUENTES OFICIALES (Blender Docs)...")
     
-    res_investigacion = modelo.generate_content(prompt_investigacion)
-    info_nueva = res_investigacion.text
+    # Configuramos el modelo con herramientas de búsqueda de Google si es posible
+    tools = [
+        {"google_search": {}} # Habilitamos búsqueda real
+    ]
+    modelo_investigador = genai.GenerativeModel(GENERATIVE_MODEL, tools=tools)
     
-    # 2. CLASIFICAR Y ESTRUCTURAR (ETL)
-    # Ahora que tenemos la info, el Orquestador debe decidir dónde guardarla.
-    lista_pilares = "\n".join([f"- {k}: {v['descripcion']}" for k, v in CATALOGO_PILARES.items()])
+    prompt_investigacion = f"""
+    ACTÚA COMO UN INVESTIGADOR DE DOCUMENTACIÓN TÉCNICA.
     
-    prompt_clasificacion = f"""
-    ANALIZA ESTA INFORMACIÓN NUEVA:
-    "{info_nueva}"
+    PREGUNTA: "{pregunta}"
+    CONTEXTO PARCIAL: {contexto_parcial}
     
-    TU CATÁLOGO DE MEMORIA:
-    {lista_pilares}
+    TU MISIÓN:
+    Busca información técnica actualizada y precisa.
     
-    TAREA:
-    1. Resume el concepto clave.
-    2. Extrae el detalle técnico/código.
-    3. Decide en QUÉ tabla (nombre_clave) debe guardarse.
+    FUENTES PRIORITARIAS OBLIGATORIAS:
+    1. Manual Oficial de Blender ([https://docs.blender.org/manual/es/4.0/](https://docs.blender.org/manual/es/4.0/))
+    2. Blender Python API ([https://docs.blender.org/api/current/](https://docs.blender.org/api/current/))
+    3. Blender Stack Exchange / BlenderArtists
     
-    JSON OBLIGATORIO:
-    {{
-        "tabla_destino": "nombre_clave_del_catalogo",
-        "concepto": "Título corto",
-        "detalle_tecnico": "Explicación técnica resumida",
-        "codigo_ejemplo": "snippet de codigo o null"
-    }}
+    Genera una explicación técnica completa con SNIPPETS DE CÓDIGO FUNCIONALES.
     """
     
     try:
-        res_clasif = modelo.generate_content(prompt_clasificacion, generation_config={"response_mime_type": "application/json"})
-        datos_aprendizaje = json.loads(limpiar_json(res_clasif.text))
+        res_investigacion = modelo_investigador.generate_content(prompt_investigacion)
+        info_nueva = res_investigacion.text
         
-        clave_destino = datos_aprendizaje.get("tabla_destino")
+        # Clasificación estricta usando los criterios de la BD
+        criterios_bd = "\n".join([f"- {k}: {v['criterio_admision']}" for k, v in CATALOGO_PILARES.items()])
         
-        if clave_destino in CATALOGO_PILARES:
-            tabla_real = CATALOGO_PILARES[clave_destino]['nombre_tabla']
-            
-            # 3. GUARDAR (RPC cerebro_aprender)
-            vec_nuevo = get_embedding(f"{datos_aprendizaje['concepto']} {datos_aprendizaje['detalle_tecnico']}")
+        prompt_clasif = f"""
+        CLASIFICA ESTE NUEVO CONOCIMIENTO:
+        "{info_nueva}"
+        
+        REGLAS DE ADMISIÓN DE LA BASE DE DATOS:
+        {criterios_bd}
+        
+        Si la información es vaga o trivial, NO la guardes (tabla_destino: null).
+        Si es valiosa, elige la tabla correcta.
+        
+        JSON: {{ "tabla_destino": "nombre_clave | null", "concepto": "...", "detalle": "...", "codigo": "..." }}
+        """
+        
+        modelo_clasif = genai.GenerativeModel(GENERATIVE_MODEL) # Modelo normal para JSON
+        res_json = modelo_clasif.generate_content(prompt_clasif, generation_config={"response_mime_type": "application/json"})
+        datos = json.loads(limpiar_json(res_json.text))
+        
+        if datos.get("tabla_destino") in CATALOGO_PILARES:
+            tabla = CATALOGO_PILARES[datos["tabla_destino"]]['nombre_tabla']
+            vec = get_embedding(f"{datos['concepto']} {datos['detalle']}")
             
             supabase.rpc('cerebro_aprender', {
-                'p_orquestador_id': ORQUESTADOR_ID,
-                'p_tabla_destino': tabla_real,
-                'p_concepto': datos_aprendizaje['concepto'],
-                'p_detalle': datos_aprendizaje['detalle_tecnico'],
-                'p_codigo': datos_aprendizaje.get('codigo_ejemplo', ''),
-                'p_vector': vec_nuevo
+                'p_orquestador_id': ORQUESTADOR_ID, 'p_tabla_destino': tabla,
+                'p_concepto': datos['concepto'], 'p_detalle': datos['detalle'],
+                'p_codigo': datos.get('codigo', ''), 'p_vector': vec
             }).execute()
+            print(f"💾 APRENDIZAJE EXPERTO GUARDADO en {tabla}")
             
-            print(f"💾 CONOCIMIENTO GUARDADO en {tabla_real}: {datos_aprendizaje['concepto']}")
-            return info_nueva + "\n\n(Nota: Acabo de aprender esto y lo he guardado en mi memoria de " + clave_destino + ")."
-            
-        else:
-            return info_nueva + "\n(Nota: No supe dónde clasificar esto, pero aquí tienes la respuesta)."
-            
+        return info_nueva
+        
     except Exception as e:
-        print(f"❌ Error en aprendizaje: {e}")
-        return info_nueva # Devolvemos la info aunque falle el guardado
+        print(f"❌ Fallo en investigación: {e}")
+        return "No pude conectar con el manual de Blender en este momento."
 
-# --- 5. ENDPOINTS ---
+# --- ENDPOINTS ---
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "online", "mode": "Orquestador Estrella Centralizada"}), 200
+    return jsonify({"status": "online", "mode": "Expert Flow Agent"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
+    if not pregunta: return jsonify({"error": "Vacio"}), 400
     
-    if not pregunta: return jsonify({"error": "Pregunta vacía"}), 400
+    print(f"\n📨 [{pregunta}]")
     
-    print(f"\n📨 Nueva solicitud: '{pregunta}'")
-    
-    # 1. PLANIFICACIÓN
-    pilares_target = planificar_busqueda(pregunta)
-    print(f"🎯 Estrategia: Buscar en {pilares_target}")
-    
-    # 2. EJECUCIÓN (Búsqueda interna)
-    vector = get_embedding(pregunta)
-    contexto = consultar_memoria(pilares_target, vector)
-    
-    # 3. EVALUACIÓN
-    if contexto:
-        print(f"✅ Encontrado en memoria interna ({len(contexto)} registros).")
-        # Generar respuesta con RAG
-        modelo = genai.GenerativeModel(GENERATIVE_MODEL)
-        prompt = f"""
-        CONTEXTO DE TU MEMORIA (BASED ON SQL):
-        {chr(10).join(contexto)}
-        
-        PREGUNTA: {pregunta}
-        
-        Responde usando el contexto. Si hay código, úsalo. Formato JSON.
-        {{ "respuesta": "...", "codigo": "..." }}
-        """
-        res = modelo.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return jsonify(json.loads(limpiar_json(res.text)))
-        
-    else:
-        print("Empty - 🤷 No sé la respuesta. Iniciando protocolo de APRENDIZAJE...")
-        # 4. APRENDIZAJE (Si falla la memoria interna)
-        respuesta_aprendida = aprender_y_guardar(pregunta)
-        
+    # 1. EL PORTERO (Filtro)
+    analisis_entrada = filtro_especialidad(pregunta)
+    if not analisis_entrada.get("es_relevante", True):
+        print(f"⛔ Rechazado: {analisis_entrada.get('razon')}")
         return jsonify({
-            "respuesta": respuesta_aprendida,
-            "fuente": "Investigación en Tiempo Real (Nuevo Conocimiento)",
-            "estado": "Aprendido y Guardado"
+            "respuesta_principal": "Solo puedo responder preguntas sobre Blender, Python y 3D.",
+            "puntos_clave": [{"titulo": "Filtro de Especialidad", "descripcion": analisis_entrada.get('razon')}],
+            "fuente": "Sistema de Seguridad"
         })
+
+    # 2. PLANIFICAR
+    pilares = planificar_busqueda(pregunta)
+    
+    # 3. CONSULTA OPTIMIZADA (Flow State)
+    vector = get_embedding(pregunta)
+    contexto = consultar_memoria_flow(pilares, vector) # ¡Usa la función SQL nueva!
+    
+    # 4. CRÍTICA
+    es_suficiente = False
+    razon = "Inicio"
+    if contexto:
+        es_suficiente, razon = evaluar_suficiencia(pregunta, contexto)
+        print(f"⚖️ ¿Suficiente?: {es_suficiente} ({razon})")
+    
+    respuesta_texto = ""
+    fuente = ""
+    
+    modelo = genai.GenerativeModel(GENERATIVE_MODEL)
+
+    if es_suficiente:
+        fuente = "Memoria Experta (HNSW Index)"
+        prompt_final = f"Responde experto con este contexto: {contexto}. Pregunta: {pregunta}"
+        res = modelo.generate_content(prompt_final)
+        respuesta_texto = res.text
+    else:
+        # Aquí entra la investigación dirigida al manual
+        fuente = "Manual Oficial Blender & Foros"
+        respuesta_texto = aprender_experto(pregunta, contexto)
+
+    # 5. SALIDA JSON
+    prompt_json = f"""
+    FORMATO JSON PARA FRONTEND:
+    TEXTO: {respuesta_texto}
+    FUENTE: {fuente}
+    
+    JSON: {{ "respuesta_principal": "...", "puntos_clave": [{{ "titulo": "...", "descripcion": "..." }}], "fuente": "..." }}
+    """
+    try:
+        res = modelo.generate_content(prompt_json, generation_config={"response_mime_type": "application/json"})
+        return jsonify(json.loads(limpiar_json(res.text)))
+    except:
+        return jsonify({"respuesta_principal": respuesta_texto, "puntos_clave": [], "fuente": fuente})
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
