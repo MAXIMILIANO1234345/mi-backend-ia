@@ -167,7 +167,8 @@ def aprender_experto(pregunta, contexto_parcial=""):
     """INVESTIGACIÓN DIRIGIDA AL MANUAL DE BLENDER."""
     print("🌐 INVESTIGANDO EN FUENTES OFICIALES...")
     
-    tools = [{"google_search": {}}]
+    # CORRECCIÓN: Para el SDK de Python se usa 'google_search_retrieval'
+    tools = [{"google_search_retrieval": {}}]
     modelo_investigador = genai.GenerativeModel(GENERATIVE_MODEL, tools=tools)
     
     prompt_investigacion = f"""
