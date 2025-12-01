@@ -65,11 +65,18 @@ cargar_catalogo()
 # --- UTILIDADES DE CONEXIÓN REMOTA (EL CABLE A TU CASA) ---
 
 def get_ngrok_headers():
-    """Retorna los headers necesarios para atravesar la seguridad de Ngrok Free."""
+    """
+    Retorna headers reforzados para engañar a Ngrok y a Ollama.
+    """
     return {
-        "ngrok-skip-browser-warning": "69420", # Valor arbitrario que Ngrok suele aceptar
-        "User-Agent": "Custom-Client-v1.0",    # Identidad personalizada
-        "Content-Type": "application/json"
+        # Llave para pasar la pantalla de advertencia de Ngrok Free
+        "ngrok-skip-browser-warning": "true",
+        # Fingimos ser un navegador real para evitar bloqueos de bots
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # Fingimos ser localhost para que Ollama no rechace la conexión externa
+        "Origin": "http://localhost:11434",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
     }
 
 def remote_generate(prompt, json_mode=False):
@@ -85,10 +92,12 @@ def remote_generate(prompt, json_mode=False):
     }
     if json_mode: payload["format"] = "json"
     
+    target_url = f"{REMOTE_LLM_URL}/generate"
+    
     try:
-        # Usamos headers reforzados
+        # print(f"📡 DEBUG: Conectando a {target_url}...")
         res = requests.post(
-            f"{REMOTE_LLM_URL}/generate", 
+            target_url, 
             json=payload, 
             headers=get_ngrok_headers(), 
             timeout=120
@@ -97,18 +106,19 @@ def remote_generate(prompt, json_mode=False):
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
-            # Imprimimos el inicio de la respuesta para diagnosticar si es HTML de Ngrok
+            # Imprimimos el inicio de la respuesta para diagnosticar
             error_preview = res.text[:200].replace('\n', ' ')
             print(f"❌ Error PC (Status {res.status_code}): {error_preview}...")
             return f"Error: El cerebro remoto devolvió estatus {res.status_code}."
     except Exception as e:
-        print(f"❌ Error Túnel: {e}")
+        print(f"❌ Error Túnel ({target_url}): {e}")
         return "Error: No puedo conectar con tu PC."
 
 def remote_embedding(text):
+    target_url = f"{REMOTE_LLM_URL}/embeddings"
     try:
         res = requests.post(
-            f"{REMOTE_LLM_URL}/embeddings", 
+            target_url, 
             json={"model": "nomic-embed-text", "prompt": text}, 
             headers=get_ngrok_headers(), 
             timeout=30
