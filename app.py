@@ -5,24 +5,28 @@ import time
 import threading
 import requests
 import urllib.request
-import urllib3 # Importamos para silenciar advertencias SSL
+import urllib3
+import ssl # Necesario para el ajuste SSL
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from urllib3.poolmanager import PoolManager
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- ORQUESTADOR HÍBRIDO INMORTAL (V17: SSL Bypass Fix) ---")
+print("--- ORQUESTADOR HÍBRIDO INMORTAL (V19: Fix SSL & Arguments) ---")
 load_dotenv()
 
-# Silenciar advertencias de SSL (Necesario al usar verify=False con Ngrok)
+# Silenciar advertencias de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Credenciales
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL')
-PUBLIC_URL = os.getenv('PUBLIC_URL') # Tu propia URL para el Heartbeat
+PUBLIC_URL = os.getenv('PUBLIC_URL') 
 
 # Limpieza de URL Ngrok
 if REMOTE_LLM_URL:
@@ -31,20 +35,56 @@ if REMOTE_LLM_URL:
         REMOTE_LLM_URL += '/api'
 
 if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
-    print("⚠️ Advertencia: Faltan variables críticas (Revisa REMOTE_LLM_URL y PUBLIC_URL)")
+    print("⚠️ Advertencia: Faltan variables críticas.")
     if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ORQUESTADOR_ID = 1
 CUSTOM_MODEL_NAME = "blender-expert"
 
-# CONFIGURACIÓN AUTÓNOMA
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 600  # 10 Minutos (Más relajado para no saturar tu PC)
-TIEMPO_HEARTBEAT = 540     # 9 Minutos (Se despierta justo antes de que Render lo duerma)
+TIEMPO_ENTRE_CICLOS = 600
+TIEMPO_HEARTBEAT = 540
 
 app = Flask(__name__)
 CORS(app)
+
+# --- ADAPTADOR SSL PERSONALIZADO (FIX DECRYPTION_FAILED) ---
+class SSLAdapter(HTTPAdapter):
+    """
+    Fuerza el uso de TLS v1.2 y ciphers compatibles para evitar errores
+    de desencriptación con Ngrok.
+    """
+    def init_poolmanager(self, connections, maxsize, block=False):
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        # Permitimos ciphers antiguos por compatibilidad si es necesario
+        context.set_ciphers('DEFAULT:@SECLEVEL=1') 
+        self.poolmanager = PoolManager(
+            num_pools=connections,
+            maxsize=maxsize,
+            block=block,
+            ssl_context=context
+        )
+
+def get_robust_session():
+    session = requests.Session()
+    retry = Retry(
+        total=5, # Aumentamos intentos
+        read=5,
+        connect=5,
+        backoff_factor=0.5, # Reintentos más rápidos
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["POST"]
+    )
+    # Usamos nuestro adaptador SSL personalizado
+    adapter = SSLAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+http_session = get_robust_session()
 
 # --- CACHE ---
 CATALOGO_PILARES = {}
@@ -70,64 +110,67 @@ def get_headers():
         "Origin": "http://localhost:11434"
     }
 
-def remote_generate(prompt):
+# CORRECCIÓN: Agregado parámetro json_mode=False
+def remote_generate(prompt, json_mode=False):
     payload = {
         "model": CUSTOM_MODEL_NAME, "prompt": prompt, "stream": False,
         "options": {"temperature": 0.2, "num_predict": 300, "top_k": 40}
     }
+    
+    # Si pedimos JSON, se lo decimos a Ollama
+    if json_mode:
+        payload["format"] = "json"
+
     try:
-        # CORRECCIÓN SSL: verify=False evita el error DECRYPTION_FAILED
-        res = requests.post(
+        # Usamos la sesión con SSL Fix
+        res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
             headers=get_headers(), 
-            timeout=600,
-            verify=False 
+            timeout=600
         )
         return res.json().get("response", "") if res.status_code == 200 else ""
     except Exception as e:
-        print(f"❌ Error PC: {e}")
+        print(f"❌ Error PC (Generate): {e}")
         return ""
 
 def remote_embedding(text):
     try:
-        # CORRECCIÓN SSL TAMBIÉN AQUÍ
-        res = requests.post(
+        res = http_session.post(
             f"{REMOTE_LLM_URL}/embeddings", 
             json={"model": "nomic-embed-text", "prompt": text}, 
             headers=get_headers(), 
-            timeout=60, 
-            verify=False
+            timeout=60
         )
         return res.json().get("embedding") if res.status_code == 200 else None
-    except: return None
+    except Exception as e:
+        print(f"❌ Error PC (Embedding): {e}")
+        return None
 
 def normalizar_json(texto):
     try: return json.loads(re.sub(r'```json\s*|\s*```', '', texto.strip()))
     except: return {}
 
 # ==============================================================================
-# ❤️ SISTEMA DE AUTO-PRESERVACIÓN (HEARTBEAT)
+# ❤️ SISTEMA DE AUTO-PRESERVACIÓN
 # ==============================================================================
 def sistema_auto_preservacion():
-    """Mantiene a Render despierto enviándose pings a sí mismo."""
     print("💓 [HEARTBEAT] Sistema de soporte vital activado.")
     while True:
         time.sleep(TIEMPO_HEARTBEAT)
         if PUBLIC_URL:
             try:
-                # Nos hacemos ping a nosotros mismos
                 requests.get(f"{PUBLIC_URL}/health", timeout=10)
-                print(f"💓 [ALIVE] Auto-ping exitoso. El servidor sigue despierto.")
+                print(f"💓 [ALIVE] Auto-ping exitoso.")
             except Exception as e:
                 print(f"⚠️ [ALIVE] Fallo en auto-ping: {e}")
         else:
-            print("⚠️ [ALIVE] No hay PUBLIC_URL configurada. Riesgo de sueño.")
+            print("⚠️ [ALIVE] Configura PUBLIC_URL para evitar sueño.")
 
 threading.Thread(target=sistema_auto_preservacion, daemon=True).start()
 
 # ==============================================================================
-# 🤖 CICLO DE VIDA AUTÓNOMO (El Jardinero)
+# 🤖 CICLO DE VIDA AUTÓNOMO
 # ==============================================================================
 
 def auditoria_sistema():
@@ -151,7 +194,6 @@ def ciclo_vida_autonomo():
     while True:
         if MODO_AUTONOMO_ACTIVO:
             try:
-                # 1. Revisar Lab
                 res = supabase.table('laboratorio_ideas').select('*').in_('estado', ['borrador']).limit(1).execute()
                 
                 if res.data:
@@ -177,7 +219,6 @@ def ciclo_vida_autonomo():
                         else:
                             supabase.table('laboratorio_ideas').update({'estado': 'rechazado'}).eq('id', tarea['id']).execute()
                 else:
-                    # Crear tarea si está vacío
                     pilar = auditoria_sistema()
                     print(f"💡 [AUTO] Auditando... Pilar débil: {pilar}")
                     tema = generar_curriculum(pilar)
@@ -197,9 +238,9 @@ threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Hybrid Immortal V16"}), 200
+    return jsonify({"status": "Online", "mode": "Hybrid Immortal V19"}), 200
 
-@app.route("/health", methods=["GET"]) # Endpoint específico para el heartbeat
+@app.route("/health", methods=["GET"])
 def health_check():
     return "OK", 200
 
@@ -210,7 +251,6 @@ def endpoint_preguntar():
     print(f"\n📨 Usuario: {pregunta}")
     
     vec = remote_embedding(pregunta)
-    # Búsqueda rápida en pilares principales
     contexto = []
     if vec:
         for p in ["api", "objetos", "logica_ia"]:
@@ -224,11 +264,12 @@ def endpoint_preguntar():
     prompt = f"Experto Blender. Contexto: {contexto_str}. Pregunta: {pregunta}. Responde."
     respuesta = remote_generate(prompt)
     
+    # CORRECCIÓN: Ahora json_mode=True es aceptado correctamente
     json_final = normalizar_json(remote_generate(f"Formatea a JSON frontend:\nTexto: {respuesta}\nFuente: Híbrido\nJSON: {{ \"respuesta_principal\": \"...\", \"puntos_clave\": [], \"fuente\": \"...\" }}", json_mode=True))
+    
     if not json_final: json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Híbrido"}
     
     return jsonify(json_final)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-    
