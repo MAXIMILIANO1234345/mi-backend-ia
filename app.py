@@ -36,7 +36,7 @@ CUSTOM_MODEL_NAME = "blender-expert"
 
 # CONFIGURACIÓN AUTÓNOMA
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 600  # 10 Minutos (Más relajado para no saturar tu PC)
+TIEMPO_ENTRE_CICLOS = 60  # 10 Minutos (Más relajado para no saturar tu PC)
 TIEMPO_HEARTBEAT = 540     # 9 Minutos (Se despierta justo antes de que Render lo duerma)
 
 app = Flask(__name__)
@@ -214,3 +214,4 @@ def endpoint_preguntar():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
