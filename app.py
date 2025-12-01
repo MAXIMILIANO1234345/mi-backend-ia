@@ -10,14 +10,14 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # --- 1. CONFIGURACIÓN ---
-print("--- Iniciando ORQUESTADOR HÍBRIDO (V13: Conexión Directa) ---")
+print("--- Iniciando ORQUESTADOR HÍBRIDO (V14: Ngrok Header Rewrite) ---")
 load_dotenv()
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL')
 
-# Limpieza automática de la URL de Ngrok
+# Limpieza automática de la URL
 if REMOTE_LLM_URL:
     REMOTE_LLM_URL = REMOTE_LLM_URL.strip().rstrip('/')
     if not REMOTE_LLM_URL.endswith('/api'):
@@ -25,7 +25,6 @@ if REMOTE_LLM_URL:
     print(f"✅ Conectando al Cerebro Local en: {REMOTE_LLM_URL}")
 
 if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
-    # Fallback para pruebas locales
     if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -60,15 +59,13 @@ cargar_catalogo()
 
 def get_headers():
     """
-    Headers esenciales. Solo necesitamos saltar la advertencia de Ngrok.
-    Al haber configurado OLLAMA_ORIGINS='*' en tu PC, ya no necesitamos más trucos.
+    Headers limpios. Dejamos que Ngrok maneje el Host header.
+    Solo mantenemos el skip-browser-warning para Ngrok.
     """
     return {
         "ngrok-skip-browser-warning": "true",
-        "Content-Type": "application/json",
-        # CAMUFLAJE: Le decimos a Ollama que somos locales para evitar el bloqueo 403
-        "User-Agent": "Ollama-Client/1.0",
-        "Origin": "http://localhost:11434"
+        "Content-Type": "application/json"
+        # Quitamos "Host" y "Origin" aquí porque lo hace el comando --host-header
     }
 
 def remote_generate(prompt, json_mode=False):
@@ -95,12 +92,11 @@ def remote_generate(prompt, json_mode=False):
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
-            # Si falla ahora, será un error real de red, no de permisos
             print(f"❌ Error PC (Status {res.status_code}): {res.text[:100]}")
-            return f"Error {res.status_code}: Falla en el cerebro local."
+            return f"Error {res.status_code} desde tu PC."
     except Exception as e:
         print(f"❌ Error de Conexión: {e}")
-        return "Error: No se puede contactar con tu PC (Revisa Ngrok)."
+        return "Error: No se puede contactar con tu PC."
 
 def remote_embedding(text):
     try:
@@ -225,7 +221,7 @@ def consultar_memoria(pilares, vector):
 def endpoint_preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
-    print(f"\n📨 Usuario: {pregunta}")
+    print(f"\n📨 Usuario Web: {pregunta}")
     
     vec = remote_embedding(pregunta)
     pilares = planificar_busqueda(pregunta)
