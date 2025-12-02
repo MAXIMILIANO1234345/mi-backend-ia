@@ -30,7 +30,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Configuración del Worker
 MODELO_DIRECTOR = "models/gemini-1.5-flash" 
 ORQUESTADOR_ID = 1 # ID de este orquestador en tu BD (ajustar si tienes múltiples)
-CICLO_ANALISIS = 1800 # Tiempo en segundos entre análisis (30 min)
+CICLO_ANALISIS = 70 # Tiempo en segundos entre análisis (30 min)
 
 # ==============================================================================
 # 2. HERRAMIENTAS DE DATOS (LECTURA DE TELEMETRÍA)
