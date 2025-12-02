@@ -2,67 +2,54 @@ import sys
 import os
 import time
 import traceback
+import json
+import google.generativeai as genai
 from datetime import datetime
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE LOGS (CRÍTICO PARA RENDER)
+# 1. CONFIGURACIÓN
 # ==============================================================================
-# Forzamos que los prints salgan inmediatamente a la consola de Render
 sys.stdout.reconfigure(line_buffering=True)
 
 def log_visual(emoji, estado, mensaje):
-    """Imprime mensajes con timestamp y fuerza el flush."""
     timestamp = datetime.now().strftime('%H:%M:%S')
     print(f"{emoji} [{timestamp}] {estado:<10} | {mensaje}", flush=True)
 
 print("\n" + "="*60)
-log_visual("🚀", "INIT", "ARRANCANDO MAESTRO V33 (AUDITORÍA INMEDIATA)")
+log_visual("🎩", "INIT", "MAESTRO V35: EDITOR JEFE Y ESTRATEGA")
+log_visual("⏳", "CONFIG", "Ciclo de auditoría configurado a 1 hora (3600s)")
 print("="*60 + "\n")
 
 try:
-    # --- IMPORTACIONES ---
-    # Las hacemos dentro del try para detectar si faltan librerías en requirements.txt
-    import json
-    import google.generativeai as genai
-    from dotenv import load_dotenv
-    from supabase import create_client, Client
-
-    log_visual("📦", "IMPORTS", "Librerías cargadas correctamente.")
-
-    # --- CARGA DE VARIABLES ---
     load_dotenv()
 
+    # Credenciales
     GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
     SUPABASE_URL = os.getenv('SUPABASE_URL')
     SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
-    # --- VALIDACIONES DE SEGURIDAD ---
-    if not GOOGLE_API_KEY:
-        log_visual("🔥", "ERROR", "Falta la variable GOOGLE_API_KEY.")
-        time.sleep(2)
-        sys.exit(1)
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        log_visual("🔥", "ERROR", "Faltan credenciales de SUPABASE.")
-        time.sleep(2)
+    if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+        log_visual("🔥", "ERROR", "Faltan credenciales críticas.")
         sys.exit(1)
 
-    # --- CONEXIÓN A SERVICIOS ---
+    # Conexiones
     genai.configure(api_key=GOOGLE_API_KEY)
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # --- CONFIGURACIÓN DEL MODELO ---
-    MODELO_DIRECTOR = "models/gemini-2.5-flash" 
+    # Configuración del Cerebro
+    MODELO_DIRECTOR = "models/gemini-1.5-flash" 
     ORQUESTADOR_ID = 1 
-    CICLO_ANALISIS = 60 # Segundos entre auditorías
+    CICLO_ANALISIS = 3600 # 1 Hora
 
-    log_visual("🔗", "CONEXION", f"Conectado a Gemini ({MODELO_DIRECTOR}) y Supabase.")
+    log_visual("🔗", "CONEXION", "Conectado a Supabase y Gemini.")
 
     # ==============================================================================
-    # 2. HERRAMIENTAS DE DATOS
+    # 2. HERRAMIENTAS DE LECTURA (Ojos del Maestro)
     # ==============================================================================
     
     def limpiar_json(texto):
-        """Limpia el formato Markdown de la respuesta para obtener JSON puro."""
         texto = texto.strip()
         if texto.startswith("```json"):
             texto = texto[7:]
@@ -74,149 +61,180 @@ try:
         
         return texto.strip()
 
-    def obtener_metricas_memoria():
-        """Lee el estado actual de las tablas de conocimiento."""
-        resumen = {}
-        tablas = ['memoria_blender_scripting', 'memoria_blender_commands']
+    def obtener_muestras_contenido():
+        """
+        Extrae muestras reales de conocimiento para evaluar su calidad.
+        No solo cuenta, LEE el contenido.
+        """
+        muestras = {}
         
-        for tabla in tablas:
-            try:
-                # 1. Contar total de registros
-                total = supabase.table(tabla).select('id', count='exact').execute()
-                
-                # 2. Obtener un par de ejemplos para contexto
-                top = supabase.table(tabla).select('concepto').limit(3).execute()
-                
-                resumen[tabla] = {
-                    "total_registros": total.count,
-                    "ejemplos": [t['concepto'] for t in top.data]
-                }
-            except Exception as e:
-                log_visual("⚠️", "DB_READ", f"Fallo leyendo tabla '{tabla}': {e}")
-                resumen[tabla] = "Error de lectura o tabla inexistente"
-                
-        return resumen
-
-    def obtener_prompts_recientes():
-        """Lee qué están pidiendo los usuarios para detectar tendencias."""
+        # 1. Obtener lista de tablas activas
         try:
-            # Traemos los últimos 10 prompts
+            pilares = supabase.table('catalogo_pilares').select('nombre_tabla').execute()
+            
+            for p in pilares.data:
+                tabla = p['nombre_tabla']
+                # Traer los últimos 5 registros agregados para ver qué está aprendiendo Gemma
+                data = supabase.table(tabla)\
+                    .select('id, concepto, detalle_tecnico, codigo_ejemplo')\
+                    .order('created_at', desc=True)\
+                    .limit(5).execute()
+                
+                if data.data:
+                    muestras[tabla] = data.data
+                    
+        except Exception as e:
+            log_visual("⚠️", "READ_ERR", f"Error leyendo muestras: {e}")
+            
+        return muestras
+
+    def leer_demanda_usuarios():
+        """Ve qué están pidiendo los usuarios para dirigir a Gemma."""
+        try:
             data = supabase.table('historial_prompts')\
                 .select('prompt_usuario')\
                 .order('created_at', desc=True)\
-                .limit(10).execute()
-            
+                .limit(20).execute()
             return [d['prompt_usuario'] for d in data.data]
-        except Exception as e:
-            log_visual("⚠️", "DB_READ", f"Fallo leyendo historial de usuarios: {e}")
-            return []
+        except: return []
 
-    def guardar_informe(json_data):
-        """Escribe el plan de acción generado por Gemini en la base de datos."""
+    # ==============================================================================
+    # 3. HERRAMIENTAS DE ACCIÓN (Manos del Maestro)
+    # ==============================================================================
+
+    def ejecutar_curaduria(acciones):
+        """Ejecuta las órdenes de eliminación o creación de tareas."""
+        if not acciones: return
+
+        # 1. ELIMINAR BASURA (Gemma a veces alucina, Gemini limpia)
+        if "eliminar_registros" in acciones:
+            for item in acciones["eliminar_registros"]:
+                tabla = item.get("tabla")
+                id_reg = item.get("id")
+                razon = item.get("razon", "Calidad baja")
+                try:
+                    supabase.table(tabla).delete().eq('id', id_reg).execute()
+                    log_visual("🗑️", "DELETE", f"Borrado ID {id_reg} en {tabla}: {razon}")
+                except Exception as e:
+                    log_visual("❌", "DEL_FAIL", f"No se pudo borrar: {e}")
+
+        # 2. ASIGNAR MISIONES A GEMMA (Crear tareas en laboratorio)
+        if "nuevas_misiones" in acciones:
+            for mision in acciones["nuevas_misiones"]:
+                tema = mision.get("tema")
+                pilar = mision.get("pilar_destino") # Debe coincidir con nombre_clave en catalogo
+                
+                if tema and pilar:
+                    try:
+                        nueva_tarea = {
+                            "orquestador_id": ORQUESTADOR_ID,
+                            "tema_objetivo": tema,
+                            "pilar_destino": pilar,
+                            "estado": "borrador", # Para que el app.py lo recoja
+                            "origen": "MAESTRO_QA"
+                        }
+                        supabase.table('laboratorio_ideas').insert(nueva_tarea).execute()
+                        log_visual("📢", "ASSIGN", f"Misión asignada a Gemma: {tema} -> {pilar}")
+                    except Exception as e:
+                        log_visual("❌", "ASSIGN_ERR", f"No se pudo asignar misión: {e}")
+
+    def guardar_informe_auditoria(analisis):
+        """Deja constancia del trabajo realizado."""
         try:
             informe = {
                 "orquestador_id": ORQUESTADOR_ID,
-                "nombre_clave": f"auditoria_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "resumen_contenido": json_data.get("resumen_estado", "Sin resumen"),
-                "brechas_detectadas": str(json_data.get("brechas_conocimiento", [])),
-                "sugerencias_mercado": json_data.get("accion_recomendada", ""),
+                "nombre_clave": f"auditoria_qa_{datetime.now().strftime('%Y%m%d_%H%M')}",
+                "resumen_contenido": analisis.get("comentario_general", "Sin comentarios"),
+                "brechas_detectadas": str(analisis.get("nuevas_misiones", [])),
+                "sugerencias_mercado": "Limpieza y Asignación Automática Ejecutada",
                 "updated_at": datetime.now().isoformat()
             }
-            
-            # Insertar en la tabla de informes
             supabase.table('informes_pilares').insert(informe).execute()
-            log_visual("💾", "DB_WRITE", f"Informe '{informe['nombre_clave']}' guardado correctamente.")
-            
-        except Exception as e:
-            log_visual("❌", "DB_ERROR", f"No se pudo escribir el informe en DB: {e}")
+        except: pass
 
     # ==============================================================================
-    # 3. CEREBRO (GEMINI)
+    # 4. CEREBRO ESTRATÉGICO
     # ==============================================================================
-    
     model = genai.GenerativeModel(
         model_name=MODELO_DIRECTOR,
-        generation_config={"response_mime_type": "application/json", "temperature": 0.5},
+        generation_config={"response_mime_type": "application/json", "temperature": 0.3}, # Temperatura baja para ser estricto
         system_instruction="""
-        Eres el MAESTRO AUDITOR del sistema Blender AI.
-        Tu trabajo es verificar que todo funciona, leer la base de datos y proponer mejoras.
+        Eres el EDITOR JEFE y ARQUITECTO de una base de conocimiento de Blender.
+        Tu subordinado es "Gemma" (un modelo local), que a veces genera contenido de baja calidad o irrelevante.
         
-        Analiza los datos recibidos y genera un JSON estricto:
+        TUS RESPONSABILIDADES:
+        1. AUDITAR (QA): Revisa las muestras de contenido recientes. Si ves código roto, explicaciones vacías (ej: "No sé"), o contenido en otro idioma no solicitado, ORDÉNA ELIMINARLO.
+        2. DIRIGIR: Lee lo que piden los usuarios. Si piden algo que no ves en las muestras, CREA UNA MISIÓN para que Gemma lo investigue.
+        
+        FORMATO JSON STRICTO:
         {
-            "resumen_estado": "Resumen breve del estado de la memoria y actividad reciente",
-            "brechas_conocimiento": ["Lista de temas que faltan en memoria basados en prompts"],
-            "accion_recomendada": "Sugerencia estratégica para el admin",
-            "status_sistema": "OPERATIVO"
+            "comentario_general": "Opinión sobre la salud actual de la base de datos",
+            "eliminar_registros": [
+                {"tabla": "nombre_tabla", "id": 123, "razon": "Código incompleto/Alucinación"}
+            ],
+            "nuevas_misiones": [
+                {"tema": "Título técnico específico para investigar", "pilar_destino": "nombre_clave_del_pilar (ej: api, objetos)"}
+            ]
         }
         """
     )
 
     # ==============================================================================
-    # 4. BUCLE PRINCIPAL DE VIDA
+    # 5. BUCLE DE VIDA
     # ==============================================================================
-    
-    def ejecutar_auditoria():
-        """Ejecuta un ciclo de análisis completo (Leer -> Pensar -> Escribir)."""
-        log_visual("🕵️", "AUDIT", "Iniciando ciclo de auditoría...")
+    def sesion_auditoria():
+        log_visual("⚡", "START", "Iniciando sesión de Control de Calidad...")
         
-        # 1. Leer Datos
-        metricas = obtener_metricas_memoria()
-        prompts = obtener_prompts_recientes()
+        # 1. Recolección de Evidencia
+        muestras = obtener_muestras_contenido()
+        prompts = leer_demanda_usuarios()
         
-        log_visual("📊", "DATA", f"Datos recolectados. Prompts recientes: {len(prompts)}")
+        if not muestras and not prompts:
+            log_visual("💤", "SKIP", "Sistema vacío. Nada que auditar.")
+            return
 
-        # 2. Construir Prompt para Gemini
-        prompt_gemini = f"""
-        REALIZA AUDITORÍA DE SISTEMA:
+        log_visual("🧠", "JUDGE", "Evaluando calidad del conocimiento...")
         
-        [ESTADO DE MEMORIA]
-        {json.dumps(metricas)}
+        prompt_analisis = f"""
+        EVALUACIÓN DE CALIDAD:
         
-        [ACTIVIDAD USUARIOS RECIENTE]
-        {json.dumps(prompts)}
+        [CONTENIDO RECIENTE (Lo que Gemma escribió)]
+        {json.dumps(muestras, indent=2)}
         
-        Instrucciones:
-        - Si no hay prompts, indica que el sistema está a la espera de usuarios (Status: ESPERA).
-        - Si hay prompts sobre temas que no ves en memoria, repórtalo como brecha.
+        [DEMANDA DE USUARIOS (Lo que el mercado pide)]
+        {json.dumps(prompts, indent=2)}
+        
+        Decide qué borrar y qué investigar.
         """
         
         try:
-            log_visual("🧠", "THINK", "Enviando datos a Gemini...")
-            response = model.generate_content(prompt_gemini)
-            
+            response = model.generate_content(prompt_analisis)
             if response.text:
-                plan = json.loads(limpiar_json(response.text))
-                log_visual("✅", "GEMINI", f"Diagnóstico: {plan.get('status_sistema')} | {plan.get('accion_recomendada')}")
+                ordenes = json.loads(limpiar_json(response.text))
                 
-                # 3. Guardar Resultado
-                guardar_informe(plan)
-            else:
-                log_visual("⚠️", "GEMINI", "Respuesta vacía del modelo.")
+                log_visual("⚖️", "VERDICT", ordenes.get("comentario_general"))
+                
+                # Ejecutar decisiones reales
+                ejecutar_curaduria(ordenes)
+                guardar_informe_auditoria(ordenes)
                 
         except Exception as e:
-            log_visual("🔥", "ERROR", f"Fallo durante el análisis de Gemini: {e}")
+            log_visual("🔥", "AI_ERROR", f"Error en juicio del Maestro: {e}")
 
-    def ciclo_vida():
-        # --- EJECUCIÓN INMEDIATA AL INICIO ---
-        # Esto garantiza que veamos actividad en el log apenas arranque el worker
-        log_visual("⚡", "START", "¡Ejecutando Auditoría de Arranque!")
-        ejecutar_auditoria()
-        log_visual("✅", "START", "Auditoría de arranque finalizada. Entrando en bucle continuo.")
+    def bucle_infinito():
+        # Primera ejecución inmediata para verificar
+        sesion_auditoria()
         
-        # --- BUCLE INFINITO ---
         while True:
-            log_visual("💤", "WAIT", f"Durmiendo {CICLO_ANALISIS} segundos...")
+            log_visual("💤", "WAIT", f"Esperando próximo turno ({CICLO_ANALISIS}s)...")
             time.sleep(CICLO_ANALISIS)
-            
-            # Ejecutamos auditoría periódica
-            ejecutar_auditoria()
+            sesion_auditoria()
 
     if __name__ == "__main__":
-        ciclo_vida()
+        bucle_infinito()
 
 except Exception as e:
-    # Captura cualquier error fatal al inicio que mataría el script silenciosamente
-    log_visual("💀", "FATAL", f"El Maestro murió inesperadamente: {e}")
+    log_visual("💀", "FATAL", f"Error irrecuperable: {e}")
     traceback.print_exc()
-    time.sleep(10) # Dar tiempo a que el log salga antes de que Render reinicie el proceso
+    time.sleep(10)
     sys.exit(1)
