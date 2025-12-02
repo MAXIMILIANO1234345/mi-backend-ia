@@ -51,7 +51,7 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
     # --- CONFIGURACIÓN DEL MODELO ---
-    MODELO_DIRECTOR = "models/gemini-1.5-flash" 
+    MODELO_DIRECTOR = "models/gemini-2.5-flash" 
     ORQUESTADOR_ID = 1 
     CICLO_ANALISIS = 60 # Segundos entre auditorías
 
