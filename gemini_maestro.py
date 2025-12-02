@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import sys
 import google.generativeai as genai
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -9,7 +10,14 @@ from datetime import datetime, timedelta
 # ==============================================================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # ==============================================================================
-print("--- INICIANDO MAESTRO ESTRATEGA V24 (Sincronizado con SQL) ---")
+def log_visual(emoji, estado, mensaje):
+    """Imprime mensajes bonitos y fuerza la salida al log de Render."""
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"{emoji} [{timestamp}] {estado:<12} | {mensaje}", flush=True)
+
+print("\n" + "="*60)
+log_visual("🎩", "SYSTEM", "INICIANDO MAESTRO ESTRATEGA V24 (Visual Mode)")
+print("="*60 + "\n")
 
 # Cargar variables de entorno
 load_dotenv()
@@ -21,16 +29,22 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 # Validaciones de seguridad
 if not all([GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    raise ValueError("⚠️ Faltan credenciales críticas (GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
+    log_visual("🔥", "ERROR", "Faltan credenciales críticas (GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY).")
+    raise ValueError("Faltan credenciales.")
 
 # Conexión a servicios
-genai.configure(api_key=GOOGLE_API_KEY)
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+try:
+    genai.configure(api_key=GOOGLE_API_KEY)
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    log_visual("🔗", "CONEXION", "Servicios conectados (Supabase + Gemini)")
+except Exception as e:
+    log_visual("🔥", "ERROR", f"Fallo en conexión inicial: {e}")
+    sys.exit(1)
 
 # Configuración del Worker
-MODELO_DIRECTOR = "models/gemini-1.5-flash" 
+MODELO_DIRECTOR = "models/gemini-2.5-flash" 
 ORQUESTADOR_ID = 1 # ID de este orquestador en tu BD (ajustar si tienes múltiples)
-CICLO_ANALISIS = 70 # Tiempo en segundos entre análisis (30 min)
+CICLO_ANALISIS = 70 # Tiempo en segundos entre análisis
 
 # ==============================================================================
 # 2. HERRAMIENTAS DE DATOS (LECTURA DE TELEMETRÍA)
@@ -78,27 +92,27 @@ def obtener_metricas_memoria():
 
             resumen_memorias[tabla] = {
                 "total_registros": total.count,
-                "top_conceptos_usados": top_usados.data,
+                "top_conceptos": [t['concepto'] for t in top_usados.data], # Simplificado para log
                 "cantidad_datos_sin_uso": zombies.count
             }
         except Exception as e:
-            print(f"⚠️ No se pudo leer la tabla {tabla}: {e}")
+            log_visual("⚠️", "WARN", f"No se pudo leer la tabla {tabla}: {e}")
             
     return resumen_memorias
 
 def obtener_tendencias_usuarios():
     """
-    Lee la tabla 'historial_prompts' para entender qué está pidiendo el mercado (los usuarios).
+    Lee la tabla 'historial_prompts' para entender qué está pidiendo el mercado.
     """
     try:
-        # Traer los últimos 50 prompts crudos
+        # Traer los últimos 20 prompts para ser ágil
         data = supabase.table('historial_prompts')\
             .select('prompt_usuario, created_at')\
             .order('created_at', desc=True)\
-            .limit(50).execute()
+            .limit(20).execute()
         return data.data
     except Exception as e:
-        print(f"⚠️ Error leyendo historial de usuarios: {e}")
+        log_visual("⚠️", "WARN", f"Error leyendo historial de usuarios: {e}")
         return []
 
 # ==============================================================================
@@ -151,7 +165,7 @@ def guardar_informe(analisis_json):
         # Preparamos el payload para SQL
         datos_informe = {
             "orquestador_id": ORQUESTADOR_ID,
-            "nombre_clave": f"analisis_{datetime.now().strftime('%Y%m%d_%H%M')}",
+            "nombre_clave": f"analisis_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "total_registros": analisis_json.get("total_registros", 0),
             "top_temas_buscados": analisis_json.get("top_temas_buscados", "N/A"),
             "resumen_contenido": analisis_json.get("resumen_contenido", ""),
@@ -162,80 +176,78 @@ def guardar_informe(analisis_json):
         
         # Insertar en Supabase
         supabase.table('informes_pilares').insert(datos_informe).execute()
-        print(f"✅ Informe Estratégico guardado: {datos_informe['nombre_clave']}")
+        log_visual("💾", "GUARDADO", f"Informe Estratégico guardado: {datos_informe['nombre_clave']}")
         
         # Procesar órdenes sugeridas (si las hay)
         if "nuevas_ordenes" in analisis_json and analisis_json["nuevas_ordenes"]:
-            print("🚀 El Maestro sugiere las siguientes acciones inmediatas:")
+            log_visual("🚀", "ACCION", f"El Maestro sugiere {len(analisis_json['nuevas_ordenes'])} acciones nuevas.")
             for orden in analisis_json["nuevas_ordenes"]:
-                print(f"   - {orden}")
-                # Aquí podrías inyectar estas órdenes en 'command_queue' automáticamente si quisieras
+                print(f"      - {orden}")
 
     except Exception as e:
-        print(f"❌ Error guardando informe en DB: {e}")
+        log_visual("❌", "DB ERROR", f"Error guardando informe en DB: {e}")
 
 # ==============================================================================
 # 5. BUCLE PRINCIPAL DE VIDA
 # ==============================================================================
 
 def ciclo_vida_maestro():
-    print(f"🎓 Maestro V24 escuchando... (Ciclo de {CICLO_ANALISIS} segundos)")
-    print("   Modo: Análisis de Mercado (Prompts) y Auditoría de Memoria")
+    log_visual("🟢", "ONLINE", f"Ciclo de vida iniciado. Intervalo: {CICLO_ANALISIS}s")
     
     while True:
         try:
-            print("\n🔍 [FASE 1] Recopilando datos de telemetría SQL...")
-            
-            # 1. Obtener Datos
+            # --- FASE 1: RECOLECCIÓN ---
+            log_visual("🔍", "SCAN", "Recopilando telemetría SQL...")
             metricas = obtener_metricas_memoria()
             prompts = obtener_tendencias_usuarios()
             
             # Validación básica para no gastar tokens si está vacío
             if not prompts and not metricas:
-                print("💤 Sin actividad suficiente para análisis. Esperando...")
-                time.sleep(300)
+                log_visual("💤", "IDLE", "Sin actividad suficiente. Esperando...")
+                time.sleep(CICLO_ANALISIS)
                 continue
 
-            print(f"   - Prompts analizados: {len(prompts)}")
-            print(f"   - Tablas de memoria auditadas: {len(metricas)}")
+            log_visual("📊", "STATS", f"Prompts: {len(prompts)} | Tablas Memoria: {len(metricas)}")
 
-            # 2. Construir el Prompt para Gemini
+            # --- FASE 2: ANÁLISIS ---
+            log_visual("🧠", "THINKING", "Procesando estrategia con Gemini...")
+            
             prompt_analisis = f"""
             DATOS DEL SISTEMA PARA ANÁLISIS ESTRATÉGICO:
-            
             --- SECCIÓN A: MÉTRICAS DE MEMORIA (Nuestro Conocimiento Actual) ---
             {json.dumps(metricas, indent=2)}
-            
             --- SECCIÓN B: DEMANDA DEL MERCADO (Últimos Prompts de Usuarios) ---
             {json.dumps(prompts, indent=2)}
             
             Basado en esto, genera el JSON para el informe 'informes_pilares'.
-            Prioriza identificar 'brechas_detectadas': cosas que piden en la Sección B que no aparecen fuertes en la Sección A.
             """
 
-            # 3. Fase de Pensamiento
-            print("🧠 [FASE 2] Procesando estrategia con Gemini...")
             response = model.generate_content(prompt_analisis)
             
+            # --- FASE 3: EJECUCIÓN ---
             if response.text:
                 try:
                     json_limpio = limpiar_json(response.text)
                     json_data = json.loads(json_limpio)
-                    
-                    # 4. Fase de Actuación
-                    print("📝 [FASE 3] Escribiendo informe en Base de Datos...")
+                    log_visual("📝", "WRITING", "Estrategia generada. Guardando en DB...")
                     guardar_informe(json_data)
                     
                 except json.JSONDecodeError as e:
-                    print(f"⚠️ Error al decodificar la respuesta JSON del modelo: {e}")
-                    print(f"   Texto recibido: {response.text[:100]}...")
+                    log_visual("⚠️", "PARSE ERROR", f"JSON inválido de Gemini: {e}")
             
-            # 5. Descanso
-            print(f"💤 Ciclo completado. Durmiendo por {CICLO_ANALISIS} segundos...")
-            time.sleep(CICLO_ANALISIS)
+            log_visual("✅", "DONE", "Ciclo completado correctamente.")
+            
+            # --- BARRA DE PROGRESO VISUAL ---
+            print(f"⏳ Esperando {CICLO_ANALISIS}s: ", end="", flush=True)
+            pasos = 10
+            tiempo_paso = CICLO_ANALISIS / pasos
+            for _ in range(pasos):
+                time.sleep(tiempo_paso)
+                print(".", end="", flush=True)
+            print(" 🚀\n")
 
         except Exception as e:
-            print(f"🔥 Error Crítico en el ciclo del Maestro: {e}")
+            log_visual("🔥", "CRITICAL", f"Error en ciclo del Maestro: {e}")
             print("   Reintentando en 60 segundos...")
             time.sleep(60)
 
