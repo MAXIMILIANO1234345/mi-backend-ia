@@ -7,7 +7,6 @@ import requests
 import urllib.request
 import urllib3
 import ssl 
-import google.generativeai as genai  # <--- NUEVO: Cerebro de respaldo
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.poolmanager import PoolManager
@@ -18,9 +17,9 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V25: Híbrido + Telemetría para Maestro)
+# 1. CONFIGURACIÓN (V25: Gemma Local Puro + Telemetría)
 # ==============================================================================
-print("--- ORQUESTADOR HÍBRIDO INMORTAL (V25: Telemetría Activada) ---")
+print("--- ORQUESTADOR LOCAL GEMMA (V25: Telemetría Activada) ---")
 load_dotenv()
 
 # Silenciar advertencias de SSL
@@ -30,7 +29,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 REMOTE_LLM_URL = os.getenv('REMOTE_LLM_URL')
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY') # <--- NUEVO: Para el Maestro/Backup
 PUBLIC_URL = os.getenv('PUBLIC_URL') 
 
 # Limpieza de URL Ngrok
@@ -46,12 +44,10 @@ if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ORQUESTADOR_ID = 1
-CUSTOM_MODEL_NAME = "blender-expert"
 
-# Configuración Gemini (Respaldo de Lujo)
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    model_gemini = genai.GenerativeModel("gemini-1.5-flash")
+# IMPORTANTE: Asegúrate de que este nombre coincida con tu modelo en Ollama
+# Ejemplos: "gemma:7b", "gemma:2b", "blender-expert"
+CUSTOM_MODEL_NAME = "blender-expert" 
 
 MODO_AUTONOMO_ACTIVO = True
 TIEMPO_ENTRE_CICLOS = 600
@@ -111,7 +107,7 @@ def cargar_catalogo():
 cargar_catalogo()
 
 # ==============================================================================
-# 📡 TELEMETRÍA (NUEVO: CONEXIÓN CON EL MAESTRO)
+# 📡 TELEMETRÍA (CONEXIÓN CON EL MAESTRO)
 # ==============================================================================
 
 def reportar_prompt_al_maestro(prompt_usuario):
@@ -129,7 +125,7 @@ def reportar_uso_memoria(lista_memorias):
     def _reportar():
         for item in lista_memorias:
             try:
-                # Llama a tu nueva función SQL V24
+                # Llama a tu función SQL V24
                 supabase.rpc('registrar_uso_memoria', {
                     'p_tabla': item['tabla'], 
                     'p_id': item['id']
@@ -141,7 +137,7 @@ def reportar_uso_memoria(lista_memorias):
         threading.Thread(target=_reportar).start()
 
 # ==============================================================================
-# 🧠 CEREBRO HÍBRIDO (LOCAL + GEMINI FALLBACK)
+# 🧠 CEREBRO LOCAL (NGROK / OLLAMA)
 # ==============================================================================
 
 def get_headers():
@@ -153,41 +149,33 @@ def get_headers():
     }
 
 def remote_generate(prompt, json_mode=False):
-    """Intenta Local primero. Si falla o timeout, usa Gemini."""
-    
-    # 1. INTENTO LOCAL
+    """Usa EXCLUSIVAMENTE el modelo local (Gemma/Expert)."""
     try:
         payload = {
             "model": CUSTOM_MODEL_NAME, "prompt": prompt, "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 300, "top_k": 40}
+            "options": {"temperature": 0.2, "num_predict": 400, "top_k": 40}
         }
         if json_mode: payload["format"] = "json"
 
+        # Timeout ajustado para permitir que Gemma piense
         res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
             headers=get_headers(), 
-            timeout=180, # Bajamos un poco para dar tiempo al fallback
+            timeout=180, 
             verify=False 
         )
         if res.status_code == 200:
             return res.json().get("response", "")
+        else:
+            return f"Error HTTP {res.status_code}: {res.text}"
+            
     except Exception as e:
-        print(f"🔌 Fallo Local ({e}). Intentando Fallback...")
-
-    # 2. INTENTO GEMINI (RESPALDO)
-    if GOOGLE_API_KEY:
-        try:
-            print("✨ Usando Gemini Back-up...")
-            conf = {"response_mime_type": "application/json"} if json_mode else {}
-            return model_gemini.generate_content(prompt, generation_config=conf).text
-        except Exception as ex:
-            print(f"❌ Fallo Total: {ex}")
-    
-    return "Error: Cerebros no disponibles."
+        print(f"🔌 Fallo Local ({e}). Revisa Ngrok.")
+        return "Error: No puedo conectar con mi cerebro local."
 
 def remote_embedding(text):
-    # Prioridad Local para mantener consistencia vectorial, Gemini si falla
+    """Embeddings locales (nomic-embed-text o el que tengas en local)."""
     try:
         res = http_session.post(
             f"{REMOTE_LLM_URL}/embeddings", 
@@ -198,10 +186,8 @@ def remote_embedding(text):
         )
         if res.status_code == 200:
             return res.json().get("embedding")
-    except:
-        if GOOGLE_API_KEY: # Fallback a embedding de Google (Ojo: dimensiones distintas, usar con cuidado)
-            # Para V24 idealmente mantenemos local, pero retornamos None si falla
-            pass 
+    except Exception as e:
+        print(f"❌ Error Embedding Local: {e}")
     return None
 
 def normalizar_json(texto):
@@ -274,12 +260,12 @@ def ciclo_vida_autonomo():
 threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 # ==============================================================================
-# 🚀 ENDPOINTS (ACTUALIZADOS PARA MAESTRO)
+# 🚀 ENDPOINTS (CLIENTES DEL MAESTRO)
 # ==============================================================================
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Hybrid Immortal V25"}), 200
+    return jsonify({"status": "Online", "mode": "Local Gemma V25"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -332,15 +318,15 @@ def endpoint_preguntar():
     # Manejo robusto de errores
     if not respuesta or "Error" in respuesta:
         return jsonify({
-            "respuesta_principal": f"Mis cerebros están re-calibrando. ({respuesta}). Reintenta.",
-            "puntos_clave": [], "fuente": "Error Timeout"
+            "respuesta_principal": f"Mi cerebro local no responde ({respuesta}). Revisa Ngrok.",
+            "puntos_clave": [], "fuente": "Error Local"
         })
 
     # Formateo JSON final
-    json_final = normalizar_json(remote_generate(f"Formatea a JSON frontend:\nTexto: {respuesta}\nFuente: Híbrido\nJSON: {{ \"respuesta_principal\": \"...\", \"puntos_clave\": [], \"fuente\": \"...\" }}", json_mode=True))
+    json_final = normalizar_json(remote_generate(f"Formatea a JSON frontend:\nTexto: {respuesta}\nFuente: Local Gemma\nJSON: {{ \"respuesta_principal\": \"...\", \"puntos_clave\": [], \"fuente\": \"...\" }}", json_mode=True))
     
     if not json_final: 
-        json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Híbrido Raw"}
+        json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Local Gemma Raw"}
     
     return jsonify(json_final)
 
