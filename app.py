@@ -18,13 +18,14 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V28: MODO PACIENCIA & LOGS)
+# 1. CONFIGURACIÓN (V30: PRIORIDAD DE USUARIO & SEMÁFORO)
 # ==============================================================================
-# Función para imprimir logs instantáneos en Render
 def log_r(msg):
     print(f"[Render] {msg}", flush=True)
 
-log_r("--- INICIANDO ORQUESTADOR V28 (MODO PACIENCIA) ---")
+log_r("--- INICIANDO ORQUESTADOR V30 (PRIORIDAD USUARIO) ---")
+log_r("✅ ESTRATEGIA: El sistema autónomo se pausará si hay humanos activos.")
+
 load_dotenv()
 
 # Silenciar advertencias de SSL
@@ -55,9 +56,15 @@ ORQUESTADOR_ID = 1
 # IMPORTANTE: Asegúrate de que este nombre coincida con tu modelo en Ollama
 CUSTOM_MODEL_NAME = "blender-expert" 
 
+# --- CONTROL DE TRÁFICO ---
 MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 600
+TIEMPO_ENTRE_CICLOS = 600 # 10 minutos entre mejoras
 TIEMPO_HEARTBEAT = 540
+
+# SEMÁFORO DE USUARIO
+# Si un humano preguntó hace menos de 60s, el bot se detiene.
+LAST_USER_ACTIVITY = 0 
+USER_COOLDOWN = 60 
 
 app = Flask(__name__)
 CORS(app)
@@ -81,7 +88,7 @@ class SSLAdapter(HTTPAdapter):
 def get_robust_session():
     session = requests.Session()
     retry = Retry(
-        total=3, # Aumentamos reintentos para dar margen a la red
+        total=3, 
         read=3,
         connect=3,
         backoff_factor=0.5,
@@ -154,7 +161,7 @@ def get_headers():
 
 def remote_generate(prompt, json_mode=False):
     """Usa EXCLUSIVAMENTE el modelo local con TIEMPO EXTENDIDO."""
-    log_r(f"🔌 [DEBUG] Iniciando conexión a: {REMOTE_LLM_URL}/generate")
+    # log_r(f"🔌 [DEBUG] Conectando: {REMOTE_LLM_URL}/generate") # Comentado para limpiar log
     try:
         payload = {
             "model": CUSTOM_MODEL_NAME, "prompt": prompt, "stream": False,
@@ -162,11 +169,7 @@ def remote_generate(prompt, json_mode=False):
         }
         if json_mode: payload["format"] = "json"
 
-        # TIMEOUT EXTENDIDO (180s = 3 minutos)
-        # Esto permite que tu PC despierte, cargue el modelo y responda
-        start_time = time.time()
-        log_r(f"⏳ [DEBUG] Enviando payload (JSON Mode: {json_mode})... Esperando hasta 180s.")
-        
+        # TIMEOUT 180s
         res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
@@ -175,8 +178,6 @@ def remote_generate(prompt, json_mode=False):
             verify=False 
         )
         
-        log_r(f"✅ [DEBUG] Respuesta recibida en {round(time.time() - start_time, 2)}s. Status: {res.status_code}")
-        
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
@@ -184,18 +185,17 @@ def remote_generate(prompt, json_mode=False):
             return f"Error HTTP {res.status_code}: {res.text}"
             
     except requests.exceptions.ConnectionError:
-        log_r("❌ [DEBUG] CRÍTICO: Conexión rechazada. Verifica si Ngrok sigue abierto en tu PC.")
+        log_r("❌ [DEBUG] CRÍTICO: Conexión rechazada. Verifica Ngrok.")
         return "Error: Conexión rechazada. Verifica Ngrok."
     except requests.exceptions.ReadTimeout:
-        log_r("❌ [DEBUG] TIMEOUT REAL: Pasaron 3 minutos y tu PC no respondió.")
-        return "Error: El modelo tardó demasiado en responder (Timeout 180s)."
+        log_r("❌ [DEBUG] TIMEOUT: Pasaron 3 minutos sin respuesta.")
+        return "Error: Timeout 180s."
     except Exception as e:
         log_r(f"❌ [DEBUG] Error desconocido: {e}")
         return f"Error: {str(e)}"
 
 def remote_embedding(text):
     try:
-        # Aumentamos el timeout de embeddings a 30s por si el modelo está frío
         res = http_session.post(
             f"{REMOTE_LLM_URL}/embeddings", 
             json={"model": "nomic-embed-text", "prompt": text}, 
@@ -206,7 +206,7 @@ def remote_embedding(text):
         if res.status_code == 200:
             return res.json().get("embedding")
     except Exception as e:
-        log_r(f"⚠️ [DEBUG] Fallo embedding (Timeout o error): {e}")
+        log_r(f"⚠️ [DEBUG] Fallo embedding: {e}")
     return None
 
 def normalizar_json(texto):
@@ -214,7 +214,7 @@ def normalizar_json(texto):
     except: return {}
 
 # ==============================================================================
-# ❤️ SISTEMA DE AUTO-PRESERVACIÓN
+# ❤️ SISTEMA DE AUTO-PRESERVACIÓN & AUTONOMÍA CONSCIENTE
 # ==============================================================================
 def sistema_auto_preservacion():
     log_r("💓 [HEARTBEAT] Sistema de soporte vital activado.")
@@ -227,13 +227,80 @@ def sistema_auto_preservacion():
 
 threading.Thread(target=sistema_auto_preservacion, daemon=True).start()
 
+# --- FUNCIONES AUXILIARES AUTÓNOMAS ---
+def auditoria_sistema():
+    stats = {}
+    for clave, data in CATALOGO_PILARES.items():
+        try:
+            res = supabase.table(data['nombre_tabla']).select('id', count='exact').execute()
+            stats[clave] = res.count
+        except: stats[clave] = 0
+    return min(stats, key=stats.get) if stats else "api"
+
+def investigar_tema(tema):
+    return remote_generate(f"ACTÚA COMO EXPERTO BLENDER. Tema: {tema}. Explica técnicamente con código python.")
+
+def ciclo_vida_autonomo():
+    log_r("🤖 [NUBE] Jardinero Híbrido iniciado (Modo Respetuoso).")
+    
+    while True:
+        # 1. VERIFICAR SEMÁFORO DE USUARIO
+        # Si alguien habló hace poco, esperamos.
+        tiempo_desde_ultimo_usuario = time.time() - LAST_USER_ACTIVITY
+        if tiempo_desde_ultimo_usuario < USER_COOLDOWN:
+            log_r(f"✋ [AUTO] Usuario activo hace {int(tiempo_desde_ultimo_usuario)}s. Pausando mantenimiento...")
+            time.sleep(30) # Esperamos 30s antes de volver a checar
+            continue
+
+        if MODO_AUTONOMO_ACTIVO:
+            try:
+                # ... (Lógica de laboratorio existente) ...
+                res = supabase.table('laboratorio_ideas').select('*').in_('estado', ['borrador']).limit(1).execute()
+                
+                # --- PUNTO DE CONTROL 2 ---
+                # Verificar de nuevo antes de una operación pesada
+                if (time.time() - LAST_USER_ACTIVITY) < USER_COOLDOWN: continue 
+
+                if res.data:
+                    tarea = res.data[0]
+                    log_r(f"🧪 [AUTO] Estudiando: {tarea['tema_objetivo']}")
+                    
+                    contenido = investigar_tema(tarea['tema_objetivo'])
+                    
+                    if contenido and "Error" not in contenido:
+                        pilar = CATALOGO_PILARES.get(tarea['pilar_destino'])
+                        if pilar:
+                            vec = remote_embedding(f"{tarea['tema_objetivo']} {contenido}")
+                            if vec:
+                                supabase.rpc('cerebro_aprender', {
+                                    'p_orquestador_id': ORQUESTADOR_ID, 'p_tabla_destino': pilar['nombre_tabla'],
+                                    'p_concepto': tarea['tema_objetivo'], 'p_detalle': contenido,
+                                    'p_codigo': "", 'p_vector': vec
+                                }).execute()
+                                supabase.table('laboratorio_ideas').delete().eq('id', tarea['id']).execute()
+                                log_r(f"🎓 [AUTO] Aprendido: {tarea['tema_objetivo']}")
+                else:
+                    # Crear nuevas tareas si no hay
+                    pilar = auditoria_sistema()
+                    tema = remote_generate(f"Eres admin BD. Pilar débil: {pilar}. Genera UN título técnico faltante.").strip()
+                    if tema and "Error" not in tema:
+                         supabase.table('laboratorio_ideas').insert({'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'}).execute()
+            
+            except Exception as e:
+                log_r(f"⚠️ Ciclo autónomo pausa: {e}")
+        
+        # Descanso largo entre ciclos de mejora
+        time.sleep(TIEMPO_ENTRE_CICLOS)
+
+threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
+
 # ==============================================================================
-# 🚀 ENDPOINTS
+# 🚀 ENDPOINTS (PRIORIDAD ALTA)
 # ==============================================================================
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Local Gemma V28 (Patient Mode)"}), 200
+    return jsonify({"status": "Online", "mode": "V30 Priority Queue"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -241,15 +308,18 @@ def health_check():
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
+    # 🔴 ACTIVAR SEMÁFORO ROJO PARA EL BOT AUTÓNOMO
+    global LAST_USER_ACTIVITY
+    LAST_USER_ACTIVITY = time.time()
+    
     log_r("="*40)
     data = request.json
     pregunta = data.get('pregunta', '')
     
     if not pregunta: 
-        log_r("⚠️ [DEBUG] Petición vacía recibida.")
         return jsonify({"error": "Vacio"}), 400
 
-    log_r(f"📨 [DEBUG] PREGUNTA ENTRANTE: {pregunta}")
+    log_r(f"📨 [USER] PREGUNTA: {pregunta}")
     
     # 1. Telemetría
     reportar_prompt_al_maestro(pregunta)
@@ -259,7 +329,6 @@ def endpoint_preguntar():
     contexto = []
     
     if vec:
-        log_r("🧠 [DEBUG] Vector generado, buscando recuerdos...")
         for p_key, p_data in CATALOGO_PILARES.items():
             try:
                 res = supabase.rpc('cerebro_recordar_flow', {
@@ -268,30 +337,34 @@ def endpoint_preguntar():
                     'p_vector': vec, 'p_umbral': 0.35, 'p_limite': 2
                 }).execute()
                 if res.data:
-                    contexto.append(f"[{p_key}] Encontrado.")
+                    contexto.append(f"[{p_key}] Info Encontrada.")
             except: pass
-    else:
-        log_r("⚠️ [DEBUG] No se pudo generar embedding (Probable timeout inicial).")
 
-    # 3. Generación
-    log_r("🚀 [DEBUG] Enviando a Generar Texto...")
+    # 3. Generación (Actualizamos actividad de nuevo por si tardó el embedding)
+    LAST_USER_ACTIVITY = time.time()
+    
+    log_r("🚀 [USER] Generando respuesta...")
     respuesta = remote_generate(f"Pregunta: {pregunta}")
     
+    # Manejo de errores simple para el usuario
     if "Error" in respuesta:
-        log_r(f"🔥 [DEBUG] FALLO GENERACIÓN: {respuesta}")
+        log_r(f"🔥 [USER] FALLO: {respuesta}")
         return jsonify({
-            "respuesta_principal": f"Fallo de conexión ({respuesta}). Verifica URL Ngrok en Render.",
-            "puntos_clave": [], "fuente": "Error"
+            "respuesta_principal": "Lo siento, mi conexión con el cerebro local es inestable en este momento.",
+            "puntos_clave": [], "fuente": "Error de Conexión"
         })
 
     # 4. Formateo JSON
-    log_r("🎨 [DEBUG] Formateando a JSON...")
+    log_r("🎨 [USER] Formateando...")
+    # Actualizamos actividad otra vez para mantener al bot alejado
+    LAST_USER_ACTIVITY = time.time()
+    
     json_final = normalizar_json(remote_generate(f"Formatea a JSON: {respuesta}", json_mode=True))
     
     if not json_final: 
         json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Local Raw"}
     
-    log_r("✨ [DEBUG] Respuesta enviada al usuario.")
+    log_r("✨ [USER] Respuesta enviada.")
     return jsonify(json_final)
 
 if __name__ == "__main__":
