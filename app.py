@@ -18,13 +18,13 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V27: DIAGNÓSTICO RÁPIDO & FLUSH LOGS)
+# 1. CONFIGURACIÓN (V28: MODO PACIENCIA & LOGS)
 # ==============================================================================
 # Función para imprimir logs instantáneos en Render
 def log_r(msg):
     print(f"[Render] {msg}", flush=True)
 
-log_r("--- INICIANDO ORQUESTADOR V27 (MODO DEPURACIÓN) ---")
+log_r("--- INICIANDO ORQUESTADOR V28 (MODO PACIENCIA) ---")
 load_dotenv()
 
 # Silenciar advertencias de SSL
@@ -81,10 +81,10 @@ class SSLAdapter(HTTPAdapter):
 def get_robust_session():
     session = requests.Session()
     retry = Retry(
-        total=1, # Solo 1 reintento para fallar rápido si la URL está mal
-        read=1,
-        connect=1,
-        backoff_factor=0.1,
+        total=3, # Aumentamos reintentos para dar margen a la red
+        read=3,
+        connect=3,
+        backoff_factor=0.5,
         status_forcelist=[500, 502, 503, 504],
         allowed_methods=["POST"]
     )
@@ -153,7 +153,7 @@ def get_headers():
     }
 
 def remote_generate(prompt, json_mode=False):
-    """Usa EXCLUSIVAMENTE el modelo local con DIAGNÓSTICO."""
+    """Usa EXCLUSIVAMENTE el modelo local con TIEMPO EXTENDIDO."""
     log_r(f"🔌 [DEBUG] Iniciando conexión a: {REMOTE_LLM_URL}/generate")
     try:
         payload = {
@@ -162,15 +162,16 @@ def remote_generate(prompt, json_mode=False):
         }
         if json_mode: payload["format"] = "json"
 
-        # TIMEOUT CORTO (15s) PARA VER SI NGROK RESPONDE
+        # TIMEOUT EXTENDIDO (180s = 3 minutos)
+        # Esto permite que tu PC despierte, cargue el modelo y responda
         start_time = time.time()
-        log_r(f"⏳ [DEBUG] Enviando payload (JSON Mode: {json_mode})...")
+        log_r(f"⏳ [DEBUG] Enviando payload (JSON Mode: {json_mode})... Esperando hasta 180s.")
         
         res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
             headers=get_headers(), 
-            timeout=15, 
+            timeout=180, 
             verify=False 
         )
         
@@ -183,28 +184,29 @@ def remote_generate(prompt, json_mode=False):
             return f"Error HTTP {res.status_code}: {res.text}"
             
     except requests.exceptions.ConnectionError:
-        log_r("❌ [DEBUG] CRÍTICO: No se pudo conectar a Ngrok. La URL es incorrecta o el túnel está cerrado.")
+        log_r("❌ [DEBUG] CRÍTICO: Conexión rechazada. Verifica si Ngrok sigue abierto en tu PC.")
         return "Error: Conexión rechazada. Verifica Ngrok."
     except requests.exceptions.ReadTimeout:
-        log_r("❌ [DEBUG] TIMEOUT: Conectó a Ngrok pero Ollama tardó más de 15s en responder.")
-        return "Error: Ollama es lento o está cargando el modelo."
+        log_r("❌ [DEBUG] TIMEOUT REAL: Pasaron 3 minutos y tu PC no respondió.")
+        return "Error: El modelo tardó demasiado en responder (Timeout 180s)."
     except Exception as e:
         log_r(f"❌ [DEBUG] Error desconocido: {e}")
         return f"Error: {str(e)}"
 
 def remote_embedding(text):
     try:
+        # Aumentamos el timeout de embeddings a 30s por si el modelo está frío
         res = http_session.post(
             f"{REMOTE_LLM_URL}/embeddings", 
             json={"model": "nomic-embed-text", "prompt": text}, 
             headers=get_headers(), 
-            timeout=5, # Embeddings deben ser muy rápidos
+            timeout=30, 
             verify=False
         )
         if res.status_code == 200:
             return res.json().get("embedding")
     except Exception as e:
-        log_r(f"⚠️ [DEBUG] Fallo embedding: {e}")
+        log_r(f"⚠️ [DEBUG] Fallo embedding (Timeout o error): {e}")
     return None
 
 def normalizar_json(texto):
@@ -231,7 +233,7 @@ threading.Thread(target=sistema_auto_preservacion, daemon=True).start()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "Local Gemma V27 (Fast Debug)"}), 200
+    return jsonify({"status": "Online", "mode": "Local Gemma V28 (Patient Mode)"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -269,7 +271,7 @@ def endpoint_preguntar():
                     contexto.append(f"[{p_key}] Encontrado.")
             except: pass
     else:
-        log_r("⚠️ [DEBUG] No se pudo generar embedding (Fallo conexión local).")
+        log_r("⚠️ [DEBUG] No se pudo generar embedding (Probable timeout inicial).")
 
     # 3. Generación
     log_r("🚀 [DEBUG] Enviando a Generar Texto...")
