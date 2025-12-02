@@ -39,7 +39,7 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
     # Configuración del Cerebro
-    MODELO_DIRECTOR = "models/gemini-1.5-flash" 
+    MODELO_DIRECTOR = "models/gemini-2.5-flash" 
     ORQUESTADOR_ID = 1 
     CICLO_ANALISIS = 3600 # 1 Hora
 
