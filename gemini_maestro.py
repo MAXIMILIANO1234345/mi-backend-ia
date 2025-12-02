@@ -23,7 +23,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Configuración del Modelo Director
-MODELO_DIRECTOR = "models/gemini-1.5-flash" # Rápido, barato y con ventana de contexto grande
+MODELO_DIRECTOR = "models/gemini-2.5-flash" # Rápido, barato y con ventana de contexto grande
 ORQUESTADOR_ID = 1
 CICLO_AUDITORIA = 3600 # 1 Hora (El jefe revisa cada hora)
 
