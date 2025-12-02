@@ -18,13 +18,13 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V31: RESPUESTA DIRECTA - SIN REFORMATO)
+# 1. CONFIGURACIÓN (V32: ORQUESTADOR + MAESTRO INTEGRADO)
 # ==============================================================================
 def log_r(msg):
-    print(f"[Render] {msg}", flush=True)
+    print(f"[Render-App] {msg}", flush=True)
 
-log_r("--- INICIANDO ORQUESTADOR V31 (RAW MODE) ---")
-log_r("✅ ESTRATEGIA: Paso de formateo eliminado para máxima estabilidad.")
+log_r("--- INICIANDO SISTEMA UNIFICADO V32 ---")
+log_r("✅ MODO: Web Server + Maestro Background Worker")
 
 load_dotenv()
 
@@ -209,6 +209,10 @@ def remote_embedding(text):
         log_r(f"⚠️ [DEBUG] Fallo embedding: {e}")
     return None
 
+def normalizar_json(texto):
+    try: return json.loads(re.sub(r'```json\s*|\s*```', '', texto.strip()))
+    except: return {}
+
 # ==============================================================================
 # ❤️ SISTEMA DE AUTO-PRESERVACIÓN & AUTONOMÍA CONSCIENTE
 # ==============================================================================
@@ -291,12 +295,33 @@ def ciclo_vida_autonomo():
 threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 # ==============================================================================
+# 🔥 LANZAMIENTO DEL MAESTRO INTEGRADO (NUEVO)
+# ==============================================================================
+# Este bloque importa y lanza el maestro en un hilo paralelo
+def lanzar_maestro_integrado():
+    try:
+        log_r("🎩 Intentando despertar al Maestro...")
+        import gemini_maestro
+        
+        # Ejecutamos el ciclo de vida en un hilo daemon
+        hilo_maestro = threading.Thread(target=gemini_maestro.ciclo_vida, daemon=True)
+        hilo_maestro.start()
+        log_r("✅ Maestro integrado lanzado con éxito.")
+    except ImportError:
+        log_r("⚠️ No se encontró 'gemini_maestro.py'. El Maestro no correrá.")
+    except Exception as e:
+        log_r(f"❌ Error lanzando Maestro: {e}")
+
+# Iniciar maestro en paralelo
+lanzar_maestro_integrado()
+
+# ==============================================================================
 # 🚀 ENDPOINTS (PRIORIDAD ALTA)
 # ==============================================================================
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "V31 Direct Raw"}), 200
+    return jsonify({"status": "Online", "mode": "V32 Unified (App + Maestro)"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -351,9 +376,7 @@ def endpoint_preguntar():
             "puntos_clave": [], "fuente": "Error de Conexión"
         })
 
-    # 4. ENTREGA DIRECTA (SIN RE-FORMATEO)
-    # Empaquetamos la respuesta cruda en el formato JSON que el frontend espera
-    # para no romper la interfaz.
+    # 4. ENTREGA DIRECTA
     json_final = {
         "respuesta_principal": respuesta, 
         "puntos_clave": [], 
