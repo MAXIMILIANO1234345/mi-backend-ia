@@ -18,13 +18,13 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V32: ORQUESTADOR + MAESTRO INTEGRADO)
+# 1. CONFIGURACIÓN (V34: CORRECCIÓN DE LANZAMIENTO)
 # ==============================================================================
 def log_r(msg):
     print(f"[Render-App] {msg}", flush=True)
 
-log_r("--- INICIANDO SISTEMA UNIFICADO V32 ---")
-log_r("✅ MODO: Web Server + Maestro Background Worker")
+log_r("--- INICIANDO SISTEMA UNIFICADO V34 ---")
+log_r("✅ MODO: Web Server + Maestro Autodetect")
 
 load_dotenv()
 
@@ -48,21 +48,15 @@ if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
     log_r("⚠️ Advertencia: Faltan variables críticas.")
     if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
 
-log_r(f"🔗 URL LLM REMOTO CONFIGURADA: {REMOTE_LLM_URL}")
+log_r(f"🔗 URL LLM REMOTO (GEMMA): {REMOTE_LLM_URL}")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ORQUESTADOR_ID = 1
 
-# IMPORTANTE: Asegúrate de que este nombre coincida con tu modelo en Ollama
+# IMPORTANTE: Nombre del modelo en tu Ollama local
 CUSTOM_MODEL_NAME = "blender-expert" 
 
-# --- CONTROL DE TRÁFICO ---
-MODO_AUTONOMO_ACTIVO = True
-TIEMPO_ENTRE_CICLOS = 600 # 10 minutos entre mejoras
-TIEMPO_HEARTBEAT = 540
-
-# SEMÁFORO DE USUARIO
-# Si un humano preguntó hace menos de 60s, el bot se detiene.
+# SEMÁFORO DE USUARIO (Para que el Maestro respete el tráfico)
 LAST_USER_ACTIVITY = 0 
 USER_COOLDOWN = 60 
 
@@ -70,7 +64,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ==============================================================================
-# 🛠️ ADAPTADOR SSL & SESIÓN ROBUSTA
+# 🛠️ CONEXIÓN ROBUSTA CON TU PC (NGROK)
 # ==============================================================================
 class SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, connections, maxsize, block=False):
@@ -78,23 +72,11 @@ class SSLAdapter(HTTPAdapter):
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         context.set_ciphers('DEFAULT:@SECLEVEL=1') 
-        self.poolmanager = PoolManager(
-            num_pools=connections,
-            maxsize=maxsize,
-            block=block,
-            ssl_context=context
-        )
+        self.poolmanager = PoolManager(num_pools=connections, maxsize=maxsize, block=block, ssl_context=context)
 
 def get_robust_session():
     session = requests.Session()
-    retry = Retry(
-        total=3, 
-        read=3,
-        connect=3,
-        backoff_factor=0.5,
-        status_forcelist=[500, 502, 503, 504],
-        allowed_methods=["POST"]
-    )
+    retry = Retry(total=3, read=3, connect=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504], allowed_methods=["POST"])
     adapter = SSLAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
@@ -103,7 +85,7 @@ def get_robust_session():
 http_session = get_robust_session()
 
 # ==============================================================================
-# 📚 CACHE DE PILARES
+# 📚 CACHE DE PILARES (MEMORIA RÁPIDA)
 # ==============================================================================
 CATALOGO_PILARES = {}
 def cargar_catalogo():
@@ -122,7 +104,7 @@ def cargar_catalogo():
 cargar_catalogo()
 
 # ==============================================================================
-# 📡 TELEMETRÍA
+# 📡 TELEMETRÍA (ALIMENTANDO AL MAESTRO)
 # ==============================================================================
 
 def reportar_prompt_al_maestro(prompt_usuario):
@@ -138,17 +120,14 @@ def reportar_uso_memoria(lista_memorias):
     def _reportar():
         for item in lista_memorias:
             try:
-                supabase.rpc('registrar_uso_memoria', {
-                    'p_tabla': item['tabla'], 
-                    'p_id': item['id']
-                }).execute()
-            except Exception as e:
-                log_r(f"⚠️ Telemetría memoria falló ID {item['id']}: {e}")
+                # Si tienes la función RPC para contar uso, úsala
+                supabase.rpc('registrar_uso_memoria', {'p_tabla': item['tabla'], 'p_id': item['id']}).execute()
+            except: pass
     if lista_memorias:
         threading.Thread(target=_reportar).start()
 
 # ==============================================================================
-# 🧠 CEREBRO LOCAL (NGROK / OLLAMA)
+# 🧠 CEREBRO LOCAL (GEMMA / OLLAMA)
 # ==============================================================================
 
 def get_headers():
@@ -160,16 +139,17 @@ def get_headers():
     }
 
 def remote_generate(prompt, json_mode=False):
-    """Usa EXCLUSIVAMENTE el modelo local con TIEMPO EXTENDIDO."""
-    # log_r(f"🔌 [DEBUG] Conectando: {REMOTE_LLM_URL}/generate") # Comentado para limpiar log
+    """Consulta a Gemma en tu PC."""
     try:
         payload = {
-            "model": CUSTOM_MODEL_NAME, "prompt": prompt, "stream": False,
-            "options": {"temperature": 0.2, "num_predict": 400, "top_k": 40}
+            "model": CUSTOM_MODEL_NAME, 
+            "prompt": prompt, 
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": 1000, "top_k": 40} # Aumentado tokens para respuestas largas
         }
         if json_mode: payload["format"] = "json"
 
-        # TIMEOUT 180s
+        # TIMEOUT ALTO: Damos 3 minutos a Gemma para pensar respuestas complejas
         res = http_session.post(
             f"{REMOTE_LLM_URL}/generate", 
             json=payload, 
@@ -181,18 +161,12 @@ def remote_generate(prompt, json_mode=False):
         if res.status_code == 200:
             return res.json().get("response", "")
         else:
-            log_r(f"❌ [DEBUG] Error HTTP del modelo: {res.text}")
-            return f"Error HTTP {res.status_code}: {res.text}"
+            log_r(f"❌ Error HTTP Gemma: {res.text}")
+            return f"Error HTTP {res.status_code}"
             
-    except requests.exceptions.ConnectionError:
-        log_r("❌ [DEBUG] CRÍTICO: Conexión rechazada. Verifica Ngrok.")
-        return "Error: Conexión rechazada. Verifica Ngrok."
-    except requests.exceptions.ReadTimeout:
-        log_r("❌ [DEBUG] TIMEOUT: Pasaron 3 minutos sin respuesta.")
-        return "Error: Timeout 180s."
     except Exception as e:
-        log_r(f"❌ [DEBUG] Error desconocido: {e}")
-        return f"Error: {str(e)}"
+        log_r(f"❌ Error conectando a Gemma: {e}")
+        return f"Error de conexión: {str(e)}"
 
 def remote_embedding(text):
     try:
@@ -205,123 +179,59 @@ def remote_embedding(text):
         )
         if res.status_code == 200:
             return res.json().get("embedding")
-    except Exception as e:
-        log_r(f"⚠️ [DEBUG] Fallo embedding: {e}")
+    except: pass
     return None
 
-def normalizar_json(texto):
-    try: return json.loads(re.sub(r'```json\s*|\s*```', '', texto.strip()))
-    except: return {}
-
 # ==============================================================================
-# ❤️ SISTEMA DE AUTO-PRESERVACIÓN & AUTONOMÍA CONSCIENTE
+# 🔥 LANZAMIENTO DEL MAESTRO INTEGRADO (CORRECCIÓN V34)
 # ==============================================================================
-def sistema_auto_preservacion():
-    log_r("💓 [HEARTBEAT] Sistema de soporte vital activado.")
-    while True:
-        time.sleep(TIEMPO_HEARTBEAT)
-        if PUBLIC_URL:
-            try:
-                requests.get(f"{PUBLIC_URL}/health", timeout=10)
-            except: pass
-
-threading.Thread(target=sistema_auto_preservacion, daemon=True).start()
-
-# --- FUNCIONES AUXILIARES AUTÓNOMAS ---
-def auditoria_sistema():
-    stats = {}
-    for clave, data in CATALOGO_PILARES.items():
-        try:
-            res = supabase.table(data['nombre_tabla']).select('id', count='exact').execute()
-            stats[clave] = res.count
-        except: stats[clave] = 0
-    return min(stats, key=stats.get) if stats else "api"
-
-def investigar_tema(tema):
-    return remote_generate(f"ACTÚA COMO EXPERTO BLENDER. Tema: {tema}. Explica técnicamente con código python.")
-
-def ciclo_vida_autonomo():
-    log_r("🤖 [NUBE] Jardinero Híbrido iniciado (Modo Respetuoso).")
-    
-    while True:
-        # 1. VERIFICAR SEMÁFORO DE USUARIO
-        # Si alguien habló hace poco, esperamos.
-        tiempo_desde_ultimo_usuario = time.time() - LAST_USER_ACTIVITY
-        if tiempo_desde_ultimo_usuario < USER_COOLDOWN:
-            log_r(f"✋ [AUTO] Usuario activo hace {int(tiempo_desde_ultimo_usuario)}s. Pausando mantenimiento...")
-            time.sleep(30) # Esperamos 30s antes de volver a checar
-            continue
-
-        if MODO_AUTONOMO_ACTIVO:
-            try:
-                # ... (Lógica de laboratorio existente) ...
-                res = supabase.table('laboratorio_ideas').select('*').in_('estado', ['borrador']).limit(1).execute()
-                
-                # --- PUNTO DE CONTROL 2 ---
-                # Verificar de nuevo antes de una operación pesada
-                if (time.time() - LAST_USER_ACTIVITY) < USER_COOLDOWN: continue 
-
-                if res.data:
-                    tarea = res.data[0]
-                    log_r(f"🧪 [AUTO] Estudiando: {tarea['tema_objetivo']}")
-                    
-                    contenido = investigar_tema(tarea['tema_objetivo'])
-                    
-                    if contenido and "Error" not in contenido:
-                        pilar = CATALOGO_PILARES.get(tarea['pilar_destino'])
-                        if pilar:
-                            vec = remote_embedding(f"{tarea['tema_objetivo']} {contenido}")
-                            if vec:
-                                supabase.rpc('cerebro_aprender', {
-                                    'p_orquestador_id': ORQUESTADOR_ID, 'p_tabla_destino': pilar['nombre_tabla'],
-                                    'p_concepto': tarea['tema_objetivo'], 'p_detalle': contenido,
-                                    'p_codigo': "", 'p_vector': vec
-                                }).execute()
-                                supabase.table('laboratorio_ideas').delete().eq('id', tarea['id']).execute()
-                                log_r(f"🎓 [AUTO] Aprendido: {tarea['tema_objetivo']}")
-                else:
-                    # Crear nuevas tareas si no hay
-                    pilar = auditoria_sistema()
-                    tema = remote_generate(f"Eres admin BD. Pilar débil: {pilar}. Genera UN título técnico faltante.").strip()
-                    if tema and "Error" not in tema:
-                         supabase.table('laboratorio_ideas').insert({'orquestador_id': ORQUESTADOR_ID, 'tema_objetivo': tema, 'pilar_destino': pilar, 'estado': 'borrador'}).execute()
-            
-            except Exception as e:
-                log_r(f"⚠️ Ciclo autónomo pausa: {e}")
-        
-        # Descanso largo entre ciclos de mejora
-        time.sleep(TIEMPO_ENTRE_CICLOS)
-
-threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
-
-# ==============================================================================
-# 🔥 LANZAMIENTO DEL MAESTRO INTEGRADO (NUEVO)
-# ==============================================================================
-# Este bloque importa y lanza el maestro en un hilo paralelo
-def lanzar_maestro_integrado():
+def despertar_maestro():
     try:
-        log_r("🎩 Intentando despertar al Maestro...")
+        log_r("🎩 Invocando a gemini_maestro...")
         import gemini_maestro
         
-        # Ejecutamos el ciclo de vida en un hilo daemon
-        hilo_maestro = threading.Thread(target=gemini_maestro.ciclo_vida, daemon=True)
-        hilo_maestro.start()
-        log_r("✅ Maestro integrado lanzado con éxito.")
-    except ImportError:
-        log_r("⚠️ No se encontró 'gemini_maestro.py'. El Maestro no correrá.")
-    except Exception as e:
-        log_r(f"❌ Error lanzando Maestro: {e}")
+        # LÓGICA DE DETECCIÓN INTELIGENTE
+        # Verifica qué función existe en el archivo maestro que tienes subido
+        target_func = None
+        
+        if hasattr(gemini_maestro, 'bucle_infinito'):
+            # V34+ (Modo Constructor/Autónomo)
+            target_func = gemini_maestro.bucle_infinito
+            log_r("✅ Detectado Maestro Moderno (bucle_infinito)")
+            
+        elif hasattr(gemini_maestro, 'ciclo_vida'):
+            # V33 (Modo Auditoría)
+            target_func = gemini_maestro.ciclo_vida
+            log_r("✅ Detectado Maestro Clásico (ciclo_vida)")
+            
+        elif hasattr(gemini_maestro, 'ciclo_maestro_loop'):
+            # V1 (Legacy)
+            target_func = gemini_maestro.ciclo_maestro_loop
+            log_r("✅ Detectado Maestro Legacy (ciclo_maestro_loop)")
 
-# Iniciar maestro en paralelo
-lanzar_maestro_integrado()
+        if target_func:
+            log_r(f"🚀 Lanzando hilo del Maestro...")
+            hilo = threading.Thread(target=target_func, daemon=True)
+            hilo.start()
+        else:
+            log_r("⚠️ Se importó el Maestro pero no se encontró ninguna función de inicio conocida.")
+            log_r(f"   Contenido detectado: {dir(gemini_maestro)}")
+            
+    except ImportError:
+        log_r("⚠️ No se encontró el archivo 'gemini_maestro.py'. El Maestro no correrá.")
+    except Exception as e:
+        log_r(f"❌ Error fatal lanzando al Maestro: {e}")
+
+# INICIAR EL MAESTRO EN PARALELO
+despertar_maestro()
 
 # ==============================================================================
-# 🚀 ENDPOINTS (PRIORIDAD ALTA)
+# 🚀 ENDPOINTS (API PARA EL FRONTEND)
 # ==============================================================================
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "V32 Unified (App + Maestro)"}), 200
+    return jsonify({"status": "Online", "mode": "V34 Unified"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -329,63 +239,75 @@ def health_check():
 
 @app.route("/preguntar", methods=["POST"])
 def endpoint_preguntar():
-    # 🔴 ACTIVAR SEMÁFORO ROJO PARA EL BOT AUTÓNOMO
     global LAST_USER_ACTIVITY
-    LAST_USER_ACTIVITY = time.time()
+    LAST_USER_ACTIVITY = time.time() # Semáforo en rojo para el Maestro
     
     log_r("="*40)
     data = request.json
     pregunta = data.get('pregunta', '')
     
-    if not pregunta: 
-        return jsonify({"error": "Vacio"}), 400
+    if not pregunta: return jsonify({"error": "Vacio"}), 400
 
-    log_r(f"📨 [USER] PREGUNTA: {pregunta}")
-    
-    # 1. Telemetría
+    log_r(f"📨 [USER] {pregunta}")
     reportar_prompt_al_maestro(pregunta)
     
-    # 2. Contexto
+    # 1. Búsqueda de Contexto (RAG)
     vec = remote_embedding(pregunta)
     contexto = []
     
     if vec:
         for p_key, p_data in CATALOGO_PILARES.items():
             try:
+                # Buscamos en las tablas que el Maestro ha descubierto/creado
                 res = supabase.rpc('cerebro_recordar_flow', {
                     'p_orquestador_id': ORQUESTADOR_ID, 
                     'p_tabla_destino': p_data['nombre_tabla'], 
                     'p_vector': vec, 'p_umbral': 0.35, 'p_limite': 2
                 }).execute()
+                
                 if res.data:
-                    contexto.append(f"[{p_key}] Info Encontrada.")
+                    for item in res.data:
+                        # Añadimos al contexto para Gemma
+                        contexto.append(f"[{p_key.upper()}] {item['concepto']}: {item.get('detalle_tecnico') or item.get('codigo_ejemplo')}")
+                        # Reportamos uso para que el Maestro sepa qué sirve
+                        reportar_uso_memoria([{'tabla': p_data['nombre_tabla'], 'id': item['id']}])
             except: pass
 
-    # 3. Generación (Actualizamos actividad de nuevo por si tardó el embedding)
-    LAST_USER_ACTIVITY = time.time()
+    # 2. Generación con Gemma
+    contexto_str = "\n".join(contexto)
+    log_r(f"📚 Contexto encontrado: {len(contexto)} fragmentos.")
     
-    log_r("🚀 [USER] Generando respuesta (RAW)...")
-    prompt_final = f"Pregunta sobre Blender Python: {pregunta}. Responde con código y explicación técnica."
+    prompt_final = f"""
+    Eres un Experto Técnico en Blender Python.
+    
+    CONTEXTO (Base de Datos):
+    {contexto_str if contexto_str else "No hay datos previos."}
+    
+    PREGUNTA DEL USUARIO:
+    {pregunta}
+    
+    INSTRUCCIONES:
+    - Responde con código Python funcional para Blender (bpy).
+    - Explica brevemente.
+    - Si el contexto ayuda, úsalo. Si no, usa tu conocimiento.
+    """
+    
+    log_r("🚀 Enviando a Gemma...")
     respuesta = remote_generate(prompt_final)
     
-    # Manejo de errores simple para el usuario
+    # 3. Respuesta Directa (Raw)
     if "Error" in respuesta:
-        log_r(f"🔥 [USER] FALLO: {respuesta}")
-        return jsonify({
-            "respuesta_principal": "Lo siento, mi conexión con el cerebro local es inestable en este momento.",
-            "puntos_clave": [], "fuente": "Error de Conexión"
-        })
+        log_r("🔥 Fallo en generación.")
+    else:
+        log_r("✨ Respuesta generada con éxito.")
 
-    # 4. ENTREGA DIRECTA
     json_final = {
         "respuesta_principal": respuesta, 
         "puntos_clave": [], 
-        "fuente": "Local Gemma (Raw)"
+        "fuente": "Memoria + Gemma" if contexto else "Gemma (Imaginación)"
     }
     
-    log_r("✨ [USER] Respuesta enviada (Directa).")
     LAST_USER_ACTIVITY = time.time()
-    
     return jsonify(json_final)
 
 if __name__ == "__main__":
