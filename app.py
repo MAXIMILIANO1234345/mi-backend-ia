@@ -18,13 +18,13 @@ from supabase import create_client, Client
 from datetime import datetime
 
 # ==============================================================================
-# 1. CONFIGURACIÓN (V30: PRIORIDAD DE USUARIO & SEMÁFORO)
+# 1. CONFIGURACIÓN (V31: RESPUESTA DIRECTA - SIN REFORMATO)
 # ==============================================================================
 def log_r(msg):
     print(f"[Render] {msg}", flush=True)
 
-log_r("--- INICIANDO ORQUESTADOR V30 (PRIORIDAD USUARIO) ---")
-log_r("✅ ESTRATEGIA: El sistema autónomo se pausará si hay humanos activos.")
+log_r("--- INICIANDO ORQUESTADOR V31 (RAW MODE) ---")
+log_r("✅ ESTRATEGIA: Paso de formateo eliminado para máxima estabilidad.")
 
 load_dotenv()
 
@@ -209,10 +209,6 @@ def remote_embedding(text):
         log_r(f"⚠️ [DEBUG] Fallo embedding: {e}")
     return None
 
-def normalizar_json(texto):
-    try: return json.loads(re.sub(r'```json\s*|\s*```', '', texto.strip()))
-    except: return {}
-
 # ==============================================================================
 # ❤️ SISTEMA DE AUTO-PRESERVACIÓN & AUTONOMÍA CONSCIENTE
 # ==============================================================================
@@ -300,7 +296,7 @@ threading.Thread(target=ciclo_vida_autonomo, daemon=True).start()
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "Online", "mode": "V30 Priority Queue"}), 200
+    return jsonify({"status": "Online", "mode": "V31 Direct Raw"}), 200
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -343,8 +339,9 @@ def endpoint_preguntar():
     # 3. Generación (Actualizamos actividad de nuevo por si tardó el embedding)
     LAST_USER_ACTIVITY = time.time()
     
-    log_r("🚀 [USER] Generando respuesta...")
-    respuesta = remote_generate(f"Pregunta: {pregunta}")
+    log_r("🚀 [USER] Generando respuesta (RAW)...")
+    prompt_final = f"Pregunta sobre Blender Python: {pregunta}. Responde con código y explicación técnica."
+    respuesta = remote_generate(prompt_final)
     
     # Manejo de errores simple para el usuario
     if "Error" in respuesta:
@@ -354,17 +351,18 @@ def endpoint_preguntar():
             "puntos_clave": [], "fuente": "Error de Conexión"
         })
 
-    # 4. Formateo JSON
-    log_r("🎨 [USER] Formateando...")
-    # Actualizamos actividad otra vez para mantener al bot alejado
+    # 4. ENTREGA DIRECTA (SIN RE-FORMATEO)
+    # Empaquetamos la respuesta cruda en el formato JSON que el frontend espera
+    # para no romper la interfaz.
+    json_final = {
+        "respuesta_principal": respuesta, 
+        "puntos_clave": [], 
+        "fuente": "Local Gemma (Raw)"
+    }
+    
+    log_r("✨ [USER] Respuesta enviada (Directa).")
     LAST_USER_ACTIVITY = time.time()
     
-    json_final = normalizar_json(remote_generate(f"Formatea a JSON: {respuesta}", json_mode=True))
-    
-    if not json_final: 
-        json_final = {"respuesta_principal": respuesta, "puntos_clave": [], "fuente": "Local Raw"}
-    
-    log_r("✨ [USER] Respuesta enviada.")
     return jsonify(json_final)
 
 if __name__ == "__main__":
