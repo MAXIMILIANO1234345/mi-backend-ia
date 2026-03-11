@@ -36,7 +36,7 @@ if REMOTE_LLM_URL:
     REMOTE_LLM_URL = REMOTE_LLM_URL.replace('/api/api', '/api')
 
 if not REMOTE_LLM_URL: 
-    REMOTE_LLM_URL = "http://localhost:11434/api"
+    REMOTE_LLM_URL = "http://localhost:11434"
 
 log_r(f"🔗 URL LLM REMOTO: {REMOTE_LLM_URL}")
 
@@ -168,3 +168,4 @@ if __name__ == "__main__":
     # Render asigna el puerto dinámicamente
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
