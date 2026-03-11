@@ -46,7 +46,7 @@ if REMOTE_LLM_URL:
 # Validaciones críticas
 if not all([SUPABASE_URL, SUPABASE_KEY, REMOTE_LLM_URL]):
     log_r("⚠️ Advertencia: Faltan variables críticas.")
-    if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434/api"
+    if not REMOTE_LLM_URL: REMOTE_LLM_URL = "http://localhost:11434  "
 
 log_r(f"🔗 URL LLM REMOTO (GEMMA): {REMOTE_LLM_URL}")
 
@@ -312,3 +312,4 @@ def endpoint_preguntar():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
