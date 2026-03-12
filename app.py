@@ -11,7 +11,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Configura tu API Key
-genai.configure(api_key=os.getenv("GEMINI_API_KEY", "AIzaSyBTS2qq7Cw8YDv34Pc5uXxtPx2uhr2qJdA"))
+genai.configure(api_key=os.getenv("GEMINI_API_KEY", "AIzaSyDZQvBmMDjXNUk3kSfHjKqovVJW25UEn6s"))
 
 # Usamos la configuración de respuesta JSON
 generation_config = {
@@ -51,3 +51,4 @@ def preguntar():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
