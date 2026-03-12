@@ -5,21 +5,27 @@ from flask_cors import CORS
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+# Esto carga las variables desde un archivo .env
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Configura tu API Key
-genai.configure(api_key=os.getenv("GEMINI_API_KEY", "AIzaSyDZQvBmMDjXNUk3kSfHjKqovVJW25UEn6s"))
+# Aquí ya no pegamos la llave. El sistema la leerá de forma segura.
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# Usamos la configuración de respuesta JSON
+if not GEMINI_KEY:
+    print("⚠️ ERROR: No se encontró la GEMINI_API_KEY. Configúrala en tu archivo .env")
+else:
+    genai.configure(api_key=GEMINI_KEY)
+
+# Configuración para evitar errores de JSON
 generation_config = {
-    "temperature": 0.2, # Bajamos la temperatura para que sea más preciso
+    "temperature": 0.4,
     "response_mime_type": "application/json",
 }
 
-model = genai.GenerativeModel('gemini-2.5-flash', generation_config=generation_config)
+model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
 
 @app.route("/preguntar", methods=["POST"])
 def preguntar():
@@ -28,27 +34,23 @@ def preguntar():
         pregunta = data.get('pregunta', '')
         
         prompt = f"""
-        Responde estrictamente en formato JSON con estas llaves:
-        "blender_python", "explicacion", "aframe_html", "narracion_voz".
-        
-        En 'blender_python', asegúrate de que el código sea funcional y esté limpio.
-        En 'aframe_html', genera solo las entidades necesarias.
-        
+        Actúa como el motor del Proyecto Génesis 3B. 
+        Responde estrictamente en formato JSON:
+        {{
+            "blender_python": "código aquí",
+            "explicacion": "texto aquí",
+            "aframe_html": "entidades aframe aquí",
+            "narracion_voz": "guion para voz sintética"
+        }}
         Pregunta: {pregunta}
         """
         
         response = model.generate_content(prompt)
-        
-        # PASO CRÍTICO: Convertimos el texto de la IA a un objeto Python
-        # y luego Flask lo convierte en un JSON seguro para la web.
-        json_response = json.loads(response.text)
-        
-        return jsonify(json_response) # Esto escapa automáticamente comillas y saltos de línea
+        return response.text, 200, {'Content-Type': 'application/json'}
 
     except Exception as e:
-        print(f"Error en el servidor: {e}")
+        print(f"Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
-
