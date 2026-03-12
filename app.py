@@ -121,19 +121,15 @@ def endpoint_preguntar():
 
     log_r(f"📨 [USER] {pregunta}")
     
-    prompt_final = f"""
-    Eres un Experto Técnico Avanzado en Blender Python y A-Frame (WebVR).
-    
-    PREGUNTA DEL USUARIO: "{pregunta}"
-    
-    INSTRUCCIONES CRÍTICAS:
-    Devuelve ÚNICAMENTE un objeto JSON válido con estas tres claves exactas. NO uses bloques de código (```json) alrededor de tu respuesta.
-    
+   prompt_final = f"""
+    Responde UNICAMENTE con este formato JSON:
     {{
-        "blender_python": "Tu código Python funcional para Blender aquí. Usa import bpy.",
-        "explicacion": "Tu explicación en texto plano o markdown simple aquí.",
-        "aframe_html": "El código HTML de A-Frame (<a-box>, <a-sphere>, etc.) para previsualizar el objeto 3D. Usa múltiples entidades si es complejo."
+        "blender_python": "import bpy\\n# Código para crear un robot rojo...",
+        "explicacion": "He creado un robot usando cubos y cilindros.",
+        "aframe_html": "<a-box color='red' position='0 2 0'></a-box><a-sphere color='red' position='0 3 0'></a-sphere>"
     }}
+    
+    Pregunta: {pregunta}
     """
     
     log_r("🚀 Enviando a Gemma (Modo Estructurado)...")
@@ -171,5 +167,6 @@ if __name__ == "__main__":
     # Render asigna el puerto dinámicamente
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
