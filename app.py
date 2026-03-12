@@ -24,7 +24,7 @@ generation_config = {
 }
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash", # Usa 1.5-flash para mayor estabilidad
+    model_name="gemini-2.5-flash", # Usa 1.5-flash para mayor estabilidad
     generation_config=generation_config,
 )
 
@@ -59,4 +59,5 @@ def preguntar():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
 
