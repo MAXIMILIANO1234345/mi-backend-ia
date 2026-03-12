@@ -25,7 +25,7 @@ generation_config = {
     "response_mime_type": "application/json",
 }
 
-model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
+model = genai.GenerativeModel('gemini-2.5-flash', generation_config=generation_config)
 
 @app.route("/preguntar", methods=["POST"])
 def preguntar():
@@ -54,3 +54,4 @@ def preguntar():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
