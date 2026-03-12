@@ -82,8 +82,13 @@ def remote_generate(prompt):
             "model": CUSTOM_MODEL_NAME, 
             "prompt": prompt, 
             "stream": False,
-            "format": "json", # ESTRICTAMENTE JSON
-            "options": {"temperature": 0.2, "num_predict": 1500} 
+            # Quitamos 'format: json' temporalmente para que el modelo no se bloquee
+            # si no puede generar un JSON perfecto a la primera.
+            "options": {
+                "temperature": 0.7, # Subimos un poco para que sea más creativo
+                "num_predict": 1000,
+                "top_p": 0.9
+            }
         }
 
         res = http_session.post(
@@ -95,14 +100,12 @@ def remote_generate(prompt):
         )
         
         if res.status_code == 200:
-            return res.json().get("response", "{}")
+            return res.json().get("response", "")
         else:
-            log_r(f"❌ Error HTTP Gemma: {res.text}")
-            return "{}"
-            
+            return ""
     except Exception as e:
-        log_r(f"❌ Error conectando a Gemma: {e}")
-        return "{}"
+        log_r(f"❌ Error en Ollama: {e}")
+        return ""
 
 # ==============================================================================
 # ENDPOINTS
@@ -168,4 +171,5 @@ if __name__ == "__main__":
     # Render asigna el puerto dinámicamente
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
