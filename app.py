@@ -1,22 +1,24 @@
 import os
-import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
-from dotenv import load_dotenv
+from dotenv import load_dotenv # Solo para uso local
 
-# Esto carga las variables desde un archivo .env
+# Carga .env si existe (local), si no existe (Render), no pasa nada
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Aquí ya no pegamos la llave. El sistema la leerá de forma segura.
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+# Intentamos obtener la variable del entorno
+# ASEGÚRATE que en el panel de Render diga exactamente: GEMINI_API_KEY
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_KEY:
-    print("⚠️ ERROR: No se encontró la GEMINI_API_KEY. Configúrala en tu archivo .env")
+    # Esto te ayudará a debuguear en los logs de Render
+    print("⚠️ ERROR: La variable GEMINI_API_KEY está vacía en el entorno.")
 else:
+    print("✅ API Key detectada correctamente.")
     genai.configure(api_key=GEMINI_KEY)
 
 # Configuración para evitar errores de JSON
@@ -54,4 +56,5 @@ def preguntar():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
+
 
