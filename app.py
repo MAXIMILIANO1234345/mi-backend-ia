@@ -1,6 +1,4 @@
 import os
-import json
-import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
@@ -11,37 +9,37 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Configuración de Gemini (Usa variables de entorno para seguridad)
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAGkLIbiw9g1qV-pMIhzpQ3OzT69HQMIb0")
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash') # Actualizado a la versión estable más eficiente
+# Configuración de Gemini con tu API Key (idealmente usa un archivo .env)
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY", "AIzaSyAGkLIbiw9g1qV-pMIhzpQ3OzT69HQMIb0"))
+
+# MAGIA AQUÍ: Forzamos al modelo a responder en JSON nativo. Adiós a los errores de parseo.
+generation_config = {"response_mime_type": "application/json"}
+model = genai.GenerativeModel('gemini-2.5-flash', generation_config=generation_config)
 
 @app.route("/preguntar", methods=["POST"])
 def preguntar():
     data = request.json
     pregunta = data.get('pregunta', '')
     
-    # Prompt de ingeniería para resultados estructurados
     prompt = f"""
-    Eres un Ingeniero experto en Computación Gráfica, Blender Python y A-Frame.
-    Tu tarea es explicar cómo construir objetos 3D.
+    Eres el motor lógico del 'Proyecto Génesis 3B'. Eres un experto en automatización 3D con Blender Python y renderizado web con A-Frame.
     
-    Responde estrictamente en formato JSON con la siguiente estructura:
+    Tu tarea es generar la estructura solicitada por el usuario.
+    Devuelve EXACTAMENTE esta estructura JSON:
     {{
-        "blender_python": "Código Python para Blender que use 'bpy'. Incluye limpieza de escena inicial.",
-        "explicacion": "Texto breve para el chat sobre la lógica técnica.",
-        "aframe_html": "Código A-Frame enriquecido. Usa <a-entity> con animaciones de entrada (property: scale; dur: 1000).",
-        "narracion_voz": "Un guion narrativo para un asistente virtual que explique el proceso paso a paso."
+        "blender_python": "Script de bpy completo. Usa variables claras y comenta cada paso. Limpia la escena al inicio.",
+        "explicacion": "Explicación técnica y profesional de qué hace el código.",
+        "aframe_html": "Código de <a-entity>. Usa la propiedad 'animation' para que los elementos aparezcan de forma fluida (ej. escalando de 0 a 1).",
+        "narracion_voz": "Guion corto, carismático y natural para que el asistente de IA lo narre en voz alta mientras aparece el modelo."
     }}
-
-    Pregunta: {pregunta}
+    
+    Petición del usuario: {pregunta}
     """
     
     try:
         response = model.generate_content(prompt)
-        # Limpieza de markdown para asegurar JSON puro
-        texto_limpio = re.sub(r'```json\s*|```', '', response.text).strip()
-        return texto_limpio, 200, {'Content-Type': 'application/json'}
+        # Como forzamos application/json, response.text es directamente un string JSON válido
+        return response.text, 200, {'Content-Type': 'application/json'}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
