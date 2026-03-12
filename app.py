@@ -45,8 +45,7 @@ try:
 except:
     supabase = None
     log_r("⚠️ Supabase desactivado o credenciales inválidas.")
-
-CUSTOM_MODEL_NAME = "blender-expert" 
+CUSTOM_MODEL_NAME = "blender-master"
 LAST_USER_ACTIVITY = 0 
 
 app = Flask(__name__)
@@ -167,6 +166,7 @@ if __name__ == "__main__":
     # Render asigna el puerto dinámicamente
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
 
 
 
