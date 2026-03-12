@@ -10,23 +10,16 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# 1. ASEGÚRATE DE QUE ESTA KEY SEA VÁLIDA O USA .ENV
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBTS2qq7Cw8YDv34Pc5uXxtPx2uhr2qJdA")
-genai.configure(api_key=GEMINI_KEY)
+# Configura tu API Key
+genai.configure(api_key=os.getenv("GEMINI_API_KEY", "AIzaSyBTS2qq7Cw8YDv34Pc5uXxtPx2uhr2qJdA"))
 
-# 2. CONFIGURACIÓN DE RESPUESTA JSON PURA
+# Usamos la configuración de respuesta JSON
 generation_config = {
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 8192,
-    "response_mime_type": "application/json", # <--- ESTO EVITA EL ERROR 500
+    "temperature": 0.2, # Bajamos la temperatura para que sea más preciso
+    "response_mime_type": "application/json",
 }
 
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-flash", # Usa 1.5-flash para mayor estabilidad
-    generation_config=generation_config,
-)
+model = genai.GenerativeModel('gemini-2.5-flash', generation_config=generation_config)
 
 @app.route("/preguntar", methods=["POST"])
 def preguntar():
@@ -35,29 +28,26 @@ def preguntar():
         pregunta = data.get('pregunta', '')
         
         prompt = f"""
-        Eres un ingeniero experto en Blender y A-Frame.
-        Responde estrictamente con este esquema JSON:
-        {{
-            "blender_python": "código completo de bpy",
-            "explicacion": "breve descripción técnica",
-            "aframe_html": "código de entidades A-Frame",
-            "narracion_voz": "guion para el asistente de voz"
-        }}
+        Responde estrictamente en formato JSON con estas llaves:
+        "blender_python", "explicacion", "aframe_html", "narracion_voz".
         
-        Pregunta del usuario: {pregunta}
+        En 'blender_python', asegúrate de que el código sea funcional y esté limpio.
+        En 'aframe_html', genera solo las entidades necesarias.
+        
+        Pregunta: {pregunta}
         """
         
         response = model.generate_content(prompt)
         
-        # Si Gemini devuelve JSON, lo enviamos tal cual
-        return response.text, 200, {'Content-Type': 'application/json'}
+        # PASO CRÍTICO: Convertimos el texto de la IA a un objeto Python
+        # y luego Flask lo convierte en un JSON seguro para la web.
+        json_response = json.loads(response.text)
+        
+        return jsonify(json_response) # Esto escapa automáticamente comillas y saltos de línea
 
     except Exception as e:
-        # Esto imprimirá el error real en tu consola de Python/Render
-        print(f"CRASH DETECTADO: {str(e)}")
-        return jsonify({"error": "Error interno del servidor", "detalle": str(e)}), 500
+        print(f"Error en el servidor: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
-
-
