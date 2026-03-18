@@ -1,93 +1,71 @@
 import os
 import json
-import re
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# 1. Configuración Inicial
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Configuración de API Key
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not GEMINI_KEY:
     print("⚠️ ERROR: No se encontró GEMINI_API_KEY.")
 else:
-    print("✅ Motor Génesis 3B (A-Frame Edition) conectado.")
     genai.configure(api_key=GEMINI_KEY)
+    print("✅ Motor Génesis 3B Conectado.")
 
-# 2. Configuración del Modelo
+# Configuración optimizada
 model = genai.GenerativeModel(
-    model_name='gemini-2.5-flash', 
+    model_name='gemini-2.5-flash', # Cambiamos a 1.5-flash para máxima compatibilidad de cuota y JSON
     generation_config={
-        "temperature": 0.4, 
-        "max_output_tokens": 4096, 
+        "temperature": 0.2, # Bajamos a 0.2 para que sea más determinista y no invente formatos
         "response_mime_type": "application/json",
     }
 )
 
-# 3. Prompt Maestro
 SISTEMA_PROMPT = """
-Actúa como el Arquitecto de Sistemas de Génesis 3B. Tu objetivo es generar escenas de A-Frame (WebVR) de nivel profesional.
-REGLAS DE CONSTRUCCIÓN:
-1. COMPOSICIÓN: No uses figuras básicas solas. Construye objetos complejos anidando <a-entity>.
-2. MATERIALES PRO: Usa atributos como 'metalness: 0.9; roughness: 0.1'.
-3. ANIMACIÓN: Todo objeto debe tener vida.
-4. LUCES: Incluye luces puntuales.
-
-ESTRUCTURA JSON OBLIGATORIA:
+Eres el Arquitecto de Sistemas de Génesis 3B. Generas escenas de A-Frame (WebVR).
+RESPONDE EXCLUSIVAMENTE EN FORMATO JSON con estas llaves:
 {
-    "aframe_html": "HTML de las entidades",
-    "explicacion": "Lógica arquitectónica",
-    "narracion_voz": "Guion inmersivo"
+    "aframe_html": "HTML de entidades anidadas y complejas",
+    "explicacion": "Lógica del diseño",
+    "narracion_voz": "Guion para el usuario"
 }
 """
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "online", "motor": "Génesis 3B"}), 200
 
 @app.route("/preguntar", methods=["POST"])
 def preguntar():
     try:
         data = request.json
-        pregunta = data.get('pregunta', 'Genera una estructura avanzada')
+        pregunta = data.get('pregunta', 'Genera una estructura base')
         
-        full_prompt = f"{SISTEMA_PROMPT}\n\nComando de Usuario: {pregunta}"
-        response = model.generate_content(full_prompt)
+        prompt_final = f"{SISTEMA_PROMPT}\n\nComando: {pregunta}"
+        response = model.generate_content(prompt_final)
         
-        raw_text = response.text.strip()
-        match = re.search(r'(\{.*\}|\[.*\])', raw_text, re.DOTALL)
-        
-        if not match:
-            raise ValueError("La respuesta de la IA no contiene un JSON válido.")
-            
-        json_clean = match.group(0)
-
+        # Al usar response_mime_type: "application/json", no necesitamos REGEX.
+        # El modelo DEBE entregar un JSON válido por defecto.
         try:
-            final_data = json.loads(json_clean)
-            return jsonify(final_data), 200
-        except json.JSONDecodeError as e:
-            print(f"Error de parseo: {e}. Intentando reparación...")
-            if not json_clean.endswith("}"):
-                json_clean += '" }'
-            return jsonify(json.loads(json_clean)), 200
+            res_json = json.loads(response.text)
+            return jsonify(res_json), 200
+        except json.JSONDecodeError:
+            # Plan B: Si falla, intentamos limpiar solo por si acaso
+            import re
+            match = re.search(r'\{.*\}', response.text, re.DOTALL)
+            if match:
+                return jsonify(json.loads(match.group(0))), 200
+            raise ValueError("La IA entregó un formato ilegible.")
 
     except Exception as e:
-        print(f"🔥 Error en el Backend: {e}")
-        return jsonify({
-            "error": "Error interno del motor",
-            "detalle": str(e)
-        }), 500
-
-# Elimina cualquier otro bloque 'if __name__ == "__main__":' que esté arriba de este.
-# Este debe ser el ÚNICO al final de tu archivo.
+        print(f"🔥 Error: {e}")
+        return jsonify({"error": "Fallo en el motor", "detalle": str(e)}), 500
 
 if __name__ == "__main__":
-    # Render inyecta el puerto en la variable PORT. 
-    # Si no existe (local), usa el 10000.
     port = int(os.environ.get("PORT", 10000))
-    
-    # IMPORTANTE: host debe ser '0.0.0.0'
-    # debug=False es vital en producción para evitar fugas de memoria
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port)
