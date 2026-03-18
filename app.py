@@ -80,7 +80,14 @@ def preguntar():
             "detalle": str(e)
         }), 500
 
-# Solo se ejecuta si corres el script localmente con `python app.py`
+# Elimina cualquier otro bloque 'if __name__ == "__main__":' que esté arriba de este.
+# Este debe ser el ÚNICO al final de tu archivo.
+
 if __name__ == "__main__":
+    # Render inyecta el puerto en la variable PORT. 
+    # Si no existe (local), usa el 10000.
     port = int(os.environ.get("PORT", 10000))
+    
+    # IMPORTANTE: host debe ser '0.0.0.0'
+    # debug=False es vital en producción para evitar fugas de memoria
     app.run(host='0.0.0.0', port=port, debug=False)
