@@ -1,39 +1,50 @@
 import os
 import json
-import re  # Para limpieza avanzada
+import re
 import google.generativeai as genai
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
+# 1. Configuración Inicial
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# Configuración de API Key
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_KEY)
 
-# Usamos flash-2.0 o pro si lo tienes disponible para mejor seguimiento de instrucciones
+if not GEMINI_KEY:
+    print("⚠️ ERROR: No se encontró GEMINI_API_KEY.")
+else:
+    print("✅ Motor Génesis 3B (A-Frame Edition) conectado.")
+    genai.configure(api_key=GEMINI_KEY)
+
+# 2. Configuración del Modelo
+# Optimizamos para estabilidad y precisión estructural
 model = genai.GenerativeModel(
     model_name='gemini-2.5-flash', 
     generation_config={
-        "temperature": 0.5, # Bajamos un poco para reducir errores sintácticos
-        "max_output_tokens": 8192,
+        "temperature": 0.4, # Precisión técnica
+        "max_output_tokens": 4096, 
         "response_mime_type": "application/json",
     }
 )
 
+# 3. Prompt Maestro de Arquitectura Virtual
 SISTEMA_PROMPT = """
-Actúa como el motor Génesis 3B. Tu salida DEBE ser un JSON puro y válido.
-IMPORTANTE: El código Python dentro de "blender_python" debe tratar las comillas internas con extremo cuidado. 
-Usa comillas simples (') para strings dentro del código Python para evitar romper las comillas dobles (") del JSON.
+Actúa como el Arquitecto de Sistemas de Génesis 3B. Tu objetivo es generar escenas de A-Frame (WebVR) de nivel profesional.
+REGLAS DE CONSTRUCCIÓN:
+1. COMPOSICIÓN: No uses figuras básicas solas. Construye objetos complejos anidando <a-entity> (ej. un radar son múltiples círculos y líneas con diferentes rotaciones).
+2. MATERIALES PRO: Usa atributos como 'metalness: 0.9; roughness: 0.1' para superficies metálicas y 'emissive: #color; emissiveIntensity: 2' para luces integradas.
+3. ANIMACIÓN: Todo objeto debe tener vida. Usa el componente 'animation' para rotaciones sutiles o pulsaciones.
+4. LUCES: Incluye luces puntuales (<a-light type="point">) dentro de tus objetos para crear atmósfera.
 
-Estructura requerida:
+ESTRUCTURA JSON OBLIGATORIA:
 {
-    "blender_python": "import bpy; ... (usa bmesh y modificadores)",
-    "explicacion": "...",
-    "aframe_html": "...",
-    "narracion_voz": "..."
+    "aframe_html": "HTML de las entidades (pulcro y anidado)",
+    "explicacion": "Lógica arquitectónica del objeto",
+    "narracion_voz": "Guion inmersivo de la IA de mando"
 }
 """
 
@@ -41,37 +52,44 @@ Estructura requerida:
 def preguntar():
     try:
         data = request.json
-        pregunta = data.get('pregunta', '')
+        pregunta = data.get('pregunta', 'Genera una estructura avanzada')
         
-        response = model.generate_content(f"{SISTEMA_PROMPT}\n\nPregunta: {pregunta}")
+        # Llamada a la IA
+        full_prompt = f"{SISTEMA_PROMPT}\n\nComando de Usuario: {pregunta}"
+        response = model.generate_content(full_prompt)
         
-        # --- LIMPIEZA NIVEL INDUSTRIAL ---
-        texto_sucio = response.text.strip()
+        # --- SISTEMA ANTIRROTURA DE JSON ---
+        raw_text = response.text.strip()
         
-        # Buscamos donde empieza y termina el objeto JSON real
-        try:
-            inicio = texto_sucio.find('{')
-            fin = texto_sucio.rfind('}') + 1
-            if inicio == -1 or fin == 0:
-                raise ValueError("No se encontró un objeto JSON en la respuesta.")
+        # Buscamos el bloque JSON real con expresiones regulares
+        # Esto ignora cualquier texto que la IA ponga antes o después del JSON
+        match = re.search(r'(\{.*\}|\[.*\])', raw_text, re.DOTALL)
+        
+        if not match:
+            raise ValueError("La respuesta de la IA no contiene un JSON válido.")
             
-            json_limpio = texto_sucio[inicio:fin]
-            
-            # Validamos parseando
-            data_final = json.loads(json_limpio)
-            return jsonify(data_final), 200
+        json_clean = match.group(0)
 
-        except Exception as parse_error:
-            print(f"DEBUG - Respuesta fallida de la IA: {texto_sucio}") # Ver en logs de Render
-            return jsonify({
-                "error": "Respuesta malformada",
-                "detalle": str(parse_error),
-                "ayuda": "La IA envió un formato inválido. Intenta ser más específico con el objeto."
-            }), 500
+        # Validamos que el JSON sea parseable
+        try:
+            final_data = json.loads(json_clean)
+            return jsonify(final_data), 200
+        except json.JSONDecodeError as e:
+            # Si el JSON está cortado, intentamos una reparación de emergencia
+            print(f"Error de parseo: {e}. Intentando reparación...")
+            if not json_clean.endswith("}"):
+                json_clean += '" }' # Cierre de emergencia para strings y objetos
+            return jsonify(json.loads(json_clean)), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"🔥 Error en el Backend: {e}")
+        return jsonify({
+            "error": "Error interno del motor",
+            "detalle": str(e)
+        }), 500
 
 if __name__ == "__main__":
+    # IMPORTANTE: En Render, asegúrate que el Start Command sea:
+    # gunicorn --timeout 90 app:app
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
