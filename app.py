@@ -22,8 +22,10 @@ else:
     genai.configure(api_key=GEMINI_KEY)
 
 # Configuración para evitar errores de JSON
+# y aseguramos que tenga suficientes tokens para escupir scripts largos de Blender.
 generation_config = {
-    "temperature": 0.4,
+    "temperature": 0.6,
+    "max_output_tokens": 8192,
     "response_mime_type": "application/json",
 }
 
@@ -35,16 +37,32 @@ def preguntar():
         data = request.json
         pregunta = data.get('pregunta', '')
         
+        # PROMPT MEJORADO: Forzando complejidad procedural
         prompt = f"""
-        Actúa como el motor del Proyecto Génesis 3B. 
-        Responde estrictamente en formato JSON:
+        Actúa como el motor avanzado del Proyecto Génesis 3B. 
+        Tu objetivo crítico es generar geometría 3D compleja, detallada y paramétrica. 
+        ESTÁ ESTRICTAMENTE PROHIBIDO entregar simples primitivas aisladas (cubos o esferas básicas).
+
+        Directrices para 'blender_python':
+        1. Utiliza programación procedural avanzada: 'bmesh' para manipulación de vértices/caras, o bucles for/while para generar estructuras repetitivas o fractales.
+        2. Aplica modificadores: Subdivision Surface, Bevel, Array, o Displace (con texturas de ruido generadas por código).
+        3. Crea materiales procedurales realistas usando el sistema de nodos (Principled BSDF, Noise Texture, ColorRamp, Bump/Normal maps).
+        4. El código debe ser limpio, estar comentado y no requerir dependencias externas.
+
+        Directrices para 'aframe_html':
+        1. Construye modelos compuestos (prefabs) anidando múltiples etiquetas <a-entity> con diferentes geometrías para formar un objeto complejo.
+        2. Aplica materiales detallados (roughness, metalness, env-map).
+        3. Incluye iluminación (luces puntuales o direccionales con sombras) y animaciones sutiles (rotación, flotación) mediante <a-animation> o el componente 'animation'.
+
+        Responde estrictamente en este formato JSON:
         {{
-            "blender_python": "código aquí",
-            "explicacion": "texto aquí",
-            "aframe_html": "entidades aframe aquí",
-            "narracion_voz": "guion para voz sintética"
+            "blender_python": "código python avanzado y robusto aquí",
+            "explicacion": "Explica brevemente la lógica matemática o procedural usada para la complejidad del modelo",
+            "aframe_html": "entidades aframe complejas y anidadas aquí",
+            "narracion_voz": "guion inmersivo y detallado para voz sintética"
         }}
-        Pregunta: {pregunta}
+        
+        Comando de usuario: {pregunta}
         """
         
         response = model.generate_content(prompt)
