@@ -15,7 +15,7 @@ genai.configure(api_key=GEMINI_KEY)
 
 # Usamos flash-2.0 o pro si lo tienes disponible para mejor seguimiento de instrucciones
 model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash', 
+    model_name='gemini-2.5-flash', 
     generation_config={
         "temperature": 0.5, # Bajamos un poco para reducir errores sintácticos
         "max_output_tokens": 8192,
