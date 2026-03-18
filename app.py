@@ -29,7 +29,7 @@ generation_config = {
 
 # Usamos el modelo más capaz para tareas técnicas
 model = genai.GenerativeModel(
-    model_name='gemini-2.0-flash', 
+    model_name='gemini-2.5-flash', 
     generation_config=generation_config
 )
 
