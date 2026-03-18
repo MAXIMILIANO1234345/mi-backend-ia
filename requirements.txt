@@ -1,9 +1,5 @@
-Flask
+flask
 flask-cors
-gunicorn
 google-generativeai
 python-dotenv
-supabase
-PyJWT
-neo4j
-
+gunicorn
