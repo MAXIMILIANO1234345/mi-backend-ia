@@ -91,5 +91,9 @@ def preguntar():
 if __name__ == "__main__":
     # IMPORTANTE: En Render, asegúrate que el Start Command sea:
     # gunicorn --timeout 90 app:app
+
+    # Render usa la variable de entorno PORT. Si no existe, usamos 10000 por defecto.
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    
+    # IMPORTANTE: host='0.0.0.0' es obligatorio para que sea visible externamente
+    app.run(host='0.0.0.0', port=port, debug=False)
