@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 from dotenv import load_dotenv # Solo para uso local
-
+import json # Asegúrate de importar json al inicio
 # Carga .env si existe (local), si no existe (Render), no pasa nada
 load_dotenv()
 
@@ -37,41 +37,34 @@ def preguntar():
         data = request.json
         pregunta = data.get('pregunta', '')
         
-        # PROMPT MEJORADO: Forzando complejidad procedural
-        prompt = f"""
-        Actúa como el motor avanzado del Proyecto Génesis 3B. 
-        Tu objetivo crítico es generar geometría 3D compleja, detallada y paramétrica. 
-        ESTÁ ESTRICTAMENTE PROHIBIDO entregar simples primitivas aisladas (cubos o esferas básicas).
-
-        Directrices para 'blender_python':
-        1. Utiliza programación procedural avanzada: 'bmesh' para manipulación de vértices/caras, o bucles for/while para generar estructuras repetitivas o fractales.
-        2. Aplica modificadores: Subdivision Surface, Bevel, Array, o Displace (con texturas de ruido generadas por código).
-        3. Crea materiales procedurales realistas usando el sistema de nodos (Principled BSDF, Noise Texture, ColorRamp, Bump/Normal maps).
-        4. El código debe ser limpio, estar comentado y no requerir dependencias externas.
-
-        Directrices para 'aframe_html':
-        1. Construye modelos compuestos (prefabs) anidando múltiples etiquetas <a-entity> con diferentes geometrías para formar un objeto complejo.
-        2. Aplica materiales detallados (roughness, metalness, env-map).
-        3. Incluye iluminación (luces puntuales o direccionales con sombras) y animaciones sutiles (rotación, flotación) mediante <a-animation> o el componente 'animation'.
-
-        Responde estrictamente en este formato JSON:
-        {{
-            "blender_python": "código python avanzado y robusto aquí",
-            "explicacion": "Explica brevemente la lógica matemática o procedural usada para la complejidad del modelo",
-            "aframe_html": "entidades aframe complejas y anidadas aquí",
-            "narracion_voz": "guion inmersivo y detallado para voz sintética"
-        }}
-        
-        Comando de usuario: {pregunta}
-        """
+        prompt = f"..." # Tu prompt aquí
         
         response = model.generate_content(prompt)
-        return response.text, 200, {'Content-Type': 'application/json'}
+        
+        # 1. Limpieza de seguridad:
+        # Eliminamos posibles bloques de markdown que la IA a veces agrega por error
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "", 1).replace("```", "", 1).strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "", 1).replace("```", "", 1).strip()
+
+        # 2. Validación: intentamos cargar el JSON para ver si está completo
+        try:
+            json_data = json.loads(raw_text)
+            return jsonify(json_data), 200
+        except json.JSONDecodeError as e:
+            print(f"JSON incompleto detectado: {e}")
+            # Si el JSON está roto, le enviamos un error claro al frontend
+            return jsonify({
+                "error": "La respuesta de la IA fue demasiado larga y el JSON se cortó.",
+                "posicion_error": str(e),
+                "raw_partial_text": raw_text[:500] # Para debug
+            }), 500
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error general: {e}")
         return jsonify({"error": str(e)}), 500
-
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
 
