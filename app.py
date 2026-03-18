@@ -92,8 +92,11 @@ if __name__ == "__main__":
     # IMPORTANTE: En Render, asegúrate que el Start Command sea:
     # gunicorn --timeout 90 app:app
 
-    # Render usa la variable de entorno PORT. Si no existe, usamos 10000 por defecto.
+if __name__ == "__main__":
+    # Render inyecta el puerto en la variable PORT. 
+    # Si no existe (local), usa el 10000.
     port = int(os.environ.get("PORT", 10000))
     
-    # IMPORTANTE: host='0.0.0.0' es obligatorio para que sea visible externamente
+    # IMPORTANTE: host debe ser '0.0.0.0'
+    # debug=False es vital en producción para evitar fugas de memoria
     app.run(host='0.0.0.0', port=port, debug=False)
