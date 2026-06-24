@@ -1,5 +1,7 @@
+
 flask
 flask-cors
-google-generativeai
+supabase
+requests
 python-dotenv
 gunicorn
